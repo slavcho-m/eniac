@@ -7,11 +7,18 @@ import uuid
 from typing import Optional, Set
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from . import db, runs
 
 app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 NAME_RE = re.compile(r"^[a-z0-9_-]+$")
 PPM_ROOT = db.ENIAC_HOME / "ppm"

@@ -124,7 +124,10 @@ eniac/
 │   ├── ARCHITECTURE.md              # This file
 │   └── GETTING_STARTED.md
 ├── scripts/
-│   └── start.sh                     # Startup + preflight
+│   ├── setup.sh                     # Preflight, ~/.eniac/ creation, dependency install
+│   ├── start.sh                     # Launch backend + frontend
+│   └── down.sh                      # Stop backend + frontend
+├── Makefile                          # make setup / make start / make down
 ├── .env.example
 └── README.md
 ```
@@ -268,18 +271,27 @@ Numeric per feature (`task1`, `task2`, ...) with slug display names. Numeric kee
 
 ### 7.1 First-time and every-time startup
 
-Runs on `./scripts/start.sh` (or `make start`):
+Two scripts, run separately so a plain restart (`make start`) doesn't re-run preflight/install every time:
+
+**`./scripts/setup.sh` (or `make setup`)** — run once, and again whenever dependencies change:
 
 1. **Preflight checks.** Verify:
    - Required Python version
    - Required Node/npm version
    - `claude` CLI installed and authenticated
-   - Backend and frontend ports free
    Any failure is a hard stop with actionable fix instructions.
 2. **Detect state of `~/.eniac/`:**
    - **Not present** → first-run path (below)
    - **Present** → returning-user path (below)
-3. **Launch backend + frontend.** Print the local URL to open.
+3. **Install dependencies.** Backend venv + pip install, frontend `npm install`.
+
+**`./scripts/start.sh` (or `make start`)** — run every time:
+
+1. Confirm setup has already run (backend venv / frontend `node_modules` present); if not, point to `make setup`.
+2. **Check backend and frontend ports are free.** Hard stop with actionable fix instructions if not.
+3. **Launch backend + frontend**, writing their PIDs to `.run.pids` at the repo root. Print the local URL to open.
+
+**`./scripts/down.sh` (or `make down`)** — stop a `start.sh` running in another terminal: reads `.run.pids`, kills both processes, removes the file. A no-op if nothing is running.
 
 ### 7.2 First-run path
 - Create `~/.eniac/` skeleton: empty `config.json`, initialized `state.db`, empty `ppm/`, empty `logs/`.
@@ -312,7 +324,7 @@ Deferred. When it becomes a concern, the plan is to guarantee backwards compatib
 Build a working vertical slice first, then widen. Do **not** build the full backend before touching the frontend.
 
 1. **Repo skeleton.** Directory structure as in §4.1, plus placeholder files.
-2. **`start.sh` script.** Preflight checks, `~/.eniac/` creation, launches backend + frontend.
+2. **`setup.sh` + `start.sh` scripts.** Preflight checks, `~/.eniac/` creation, and dependency install (`setup.sh`); launching backend + frontend (`start.sh`). `Makefile` wraps both as `make setup` / `make start`.
 3. **Minimal backend.** `POST /projects`, `POST /projects/{id}/tasks` (creates task, spawns `claude` with a hardcoded Supervisor prompt, streams stdout).
 4. **Minimal frontend.** Project selector, prompt input, live output panel via WebSocket.
 5. **End-to-end verification.** Type a prompt in the UI, watch `claude` respond in real time. Everything else is added *on top* of a working pipe.
