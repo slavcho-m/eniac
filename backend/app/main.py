@@ -21,7 +21,6 @@ app.add_middleware(
 )
 
 NAME_RE = re.compile(r"^[a-z0-9_-]+$")
-PPM_ROOT = db.ENIAC_HOME / "ppm"
 
 # Keep references so fire-and-forget run tasks aren't garbage collected mid-flight.
 _background_tasks: Set[asyncio.Task] = set()
@@ -42,6 +41,10 @@ class TaskCreateBody(BaseModel):
     prompt: str
 
 
+class RespondBody(BaseModel):
+    answer: str
+
+
 @app.on_event("startup")
 def on_startup() -> None:
     db.init_db()
@@ -49,7 +52,7 @@ def on_startup() -> None:
 
 def create_ppm_skeleton(name: str, workspace_path: Optional[str]) -> None:
     """§4.2: POST /projects owns creating the project's PPM skeleton."""
-    project_dir = PPM_ROOT / name
+    project_dir = db.PPM_ROOT / name
     (project_dir / "contracts").mkdir(parents=True, exist_ok=True)
     for domain in ("frontend", "backend", "devops", "architecture"):
         (project_dir / domain / "features").mkdir(parents=True, exist_ok=True)
@@ -86,9 +89,73 @@ async def create_task(project_id: str, body: TaskCreateBody):
 
     run_id = runs.new_run_id("context", body.prompt)
     db.insert_run(run_id, task_id, "context")
-    _fire_and_forget(runs.start_run(run_id, body.prompt))
+    _fire_and_forget(runs.start_run(run_id, task_id, project_id, body.prompt, "context"))
 
     return {"task_id": task_id, "run_id": run_id}
+
+
+@app.get("/tasks/{task_id}")
+def get_task(task_id: str):
+    task = db.get_task(task_id)
+    if task is None:
+        raise HTTPException(404, f"task '{task_id}' not found")
+    return {
+        "id": task["id"],
+        "project_id": task["project_id"],
+        "prompt": task["prompt"],
+        "status": task["status"],
+        "feature_slug": task["feature_slug"],
+        "masterminds": json.loads(task["masterminds"]) if task["masterminds"] else None,
+        "context_confirmed_at": task["context_confirmed_at"],
+        "pending_questions": (
+            json.loads(task["pending_questions"]) if task["pending_questions"] else None
+        ),
+    }
+
+
+@app.post("/tasks/{task_id}/respond")
+async def respond(task_id: str, body: RespondBody):
+    task = db.get_task(task_id)
+    if task is None:
+        raise HTTPException(404, f"task '{task_id}' not found")
+    if task["status"] != "awaiting_clarification":
+        raise HTTPException(409, f"task is not awaiting clarification (status: {task['status']})")
+
+    run_id = runs.new_run_id("context", body.answer)
+    db.insert_run(run_id, task_id, "context")
+    _fire_and_forget(
+        runs.start_run(
+            run_id,
+            task_id,
+            task["project_id"],
+            body.answer,
+            "context",
+            resume_session_id=task["session_id"],
+        )
+    )
+
+    return {"task_id": task_id, "run_id": run_id}
+
+
+@app.post("/tasks/{task_id}/confirm-context")
+def confirm_context(task_id: str):
+    task = db.get_task(task_id)
+    if task is None:
+        raise HTTPException(404, f"task '{task_id}' not found")
+    if task["feature_slug"] is None:
+        raise HTTPException(409, "context not ready yet")
+    if task["context_confirmed_at"] is not None:
+        raise HTTPException(409, "context already confirmed")
+
+    masterminds = json.loads(task["masterminds"])
+    context_path = (
+        db.PPM_ROOT / task["project_id"] / masterminds[0] / "features" / task["feature_slug"] / "context.md"
+    )
+    if not context_path.exists():
+        raise HTTPException(409, "context.md missing on disk")
+
+    confirmed_at = db.confirm_task_context(task_id)
+    return {"task_id": task_id, "context_confirmed_at": confirmed_at}
 
 
 @app.websocket("/runs/{run_id}/stream")
