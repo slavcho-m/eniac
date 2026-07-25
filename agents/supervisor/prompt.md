@@ -24,4 +24,4 @@ You will be resumed in the same conversation with the user's answer as your next
   "reasoning": "why this Mastermind order"
 }
 ```
-`masterminds` is an ordered list drawn only from `frontend`, `backend`, `devops`, `architect` — the first entry is whichever domain should investigate first. `constraints` may be an empty array, but must be present.
+`masterminds` is an ordered, non-empty list drawn only from `frontend`, `backend`, `devops`, `architect` — the first entry is whichever domain should investigate first. `constraints` may be an empty array, but must be present.

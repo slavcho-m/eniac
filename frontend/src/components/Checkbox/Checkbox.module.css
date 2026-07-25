@@ -1,0 +1,55 @@
+.wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.box {
+  appearance: none;
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-hairline);
+  border-radius: 3px;
+  cursor: pointer;
+  display: grid;
+  place-content: center;
+}
+
+.box::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 1px;
+  background: var(--info);
+  transform: scale(0);
+  transition: transform 0.1s ease;
+}
+
+.box:checked::before {
+  transform: scale(1);
+}
+
+.box:checked {
+  border-color: var(--info-border);
+}
+
+.label {
+  font-size: var(--text-body);
+  color: var(--text-primary);
+}
+
+.description {
+  margin: 0;
+  padding-left: 23px;
+  font-size: var(--text-hint);
+  color: var(--text-secondary);
+}

@@ -1,0 +1,40 @@
+.wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: var(--text-body);
+  font-family: inherit;
+}
+
+.trigger:hover {
+  color: var(--text-primary);
+}
+
+.chevron {
+  display: inline-flex;
+  transition: transform 0.12s ease;
+}
+
+.chevronOpen {
+  transform: rotate(180deg);
+}
+
+.content {
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-card);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}

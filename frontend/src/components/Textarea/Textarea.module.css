@@ -1,0 +1,21 @@
+.textarea {
+  display: block;
+  width: 100%;
+  resize: vertical;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-card);
+  padding: 10px 12px;
+  font-family: inherit;
+  font-size: var(--text-body);
+  color: var(--text-primary);
+  outline: none;
+}
+
+.textarea:focus {
+  border-color: var(--info-border);
+}
+
+.textarea::placeholder {
+  color: var(--text-tertiary);
+}

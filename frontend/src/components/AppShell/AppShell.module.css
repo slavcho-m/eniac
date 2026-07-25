@@ -1,0 +1,31 @@
+.shell {
+  display: flex;
+  height: 100vh;
+}
+
+.left {
+  width: 280px;
+  flex-shrink: 0;
+  background: var(--bg-panel);
+  border-right: 1px solid var(--border-hairline);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  padding: 20px 16px;
+}
+
+.main {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 28px 32px;
+}
+
+.right {
+  width: 340px;
+  flex-shrink: 0;
+  background: var(--bg-panel);
+  border-left: 1px solid var(--border-hairline);
+  overflow-y: auto;
+  padding: 20px 24px;
+}

@@ -4,7 +4,7 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 ENIAC_HOME = Path.home() / ".eniac"
 DB_PATH = ENIAC_HOME / "state.db"
@@ -26,16 +26,32 @@ CREATE TABLE IF NOT EXISTS tasks (
     context_confirmed_at TEXT,
     session_id TEXT,
     pending_questions TEXT,
+    requirements_approved_at TEXT,
+    tasks_approved_at TEXT,
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS runs (
     id TEXT PRIMARY KEY,
     task_id TEXT NOT NULL REFERENCES tasks(id),
     stage TEXT NOT NULL,
+    item_id TEXT,
     status TEXT NOT NULL,
     transcript TEXT,
+    diff TEXT,
     created_at TEXT NOT NULL,
     completed_at TEXT
+);
+CREATE TABLE IF NOT EXISTS task_items (
+    task_id TEXT NOT NULL REFERENCES tasks(id),
+    item_id TEXT NOT NULL,
+    slug TEXT NOT NULL,
+    description TEXT NOT NULL,
+    assistant TEXT NOT NULL,
+    status TEXT NOT NULL,
+    session_id TEXT,
+    baseline_diff TEXT,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (task_id, item_id)
 );
 """
 
@@ -68,9 +84,21 @@ def init_db() -> None:
             "context_confirmed_at TEXT",
             "session_id TEXT",
             "pending_questions TEXT",
+            "requirements_approved_at TEXT",
+            "tasks_approved_at TEXT",
         ):
             try:
                 conn.execute(f"ALTER TABLE tasks ADD COLUMN {column}")
+            except sqlite3.OperationalError:
+                pass
+        for column in ("item_id TEXT", "diff TEXT"):
+            try:
+                conn.execute(f"ALTER TABLE runs ADD COLUMN {column}")
+            except sqlite3.OperationalError:
+                pass
+        for column in ("session_id TEXT", "baseline_diff TEXT"):
+            try:
+                conn.execute(f"ALTER TABLE task_items ADD COLUMN {column}")
             except sqlite3.OperationalError:
                 pass
 
@@ -90,6 +118,31 @@ def get_project(project_id: str) -> Optional[sqlite3.Row]:
         ).fetchone()
 
 
+def list_projects() -> List[sqlite3.Row]:
+    with connect() as conn:
+        return conn.execute("SELECT * FROM projects ORDER BY created_at").fetchall()
+
+
+def update_project_workspace_path(project_id: str, workspace_path: Optional[str]) -> None:
+    with connect() as conn:
+        conn.execute(
+            "UPDATE projects SET workspace_path = ? WHERE id = ?", (workspace_path, project_id)
+        )
+
+
+def delete_project(project_id: str) -> None:
+    with connect() as conn:
+        task_ids = [
+            row["id"]
+            for row in conn.execute("SELECT id FROM tasks WHERE project_id = ?", (project_id,)).fetchall()
+        ]
+        for task_id in task_ids:
+            conn.execute("DELETE FROM task_items WHERE task_id = ?", (task_id,))
+            conn.execute("DELETE FROM runs WHERE task_id = ?", (task_id,))
+        conn.execute("DELETE FROM tasks WHERE project_id = ?", (project_id,))
+        conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+
+
 def insert_task(task_id: str, project_id: str, prompt: str) -> None:
     with connect() as conn:
         conn.execute(
@@ -104,6 +157,20 @@ def get_task(task_id: str) -> Optional[sqlite3.Row]:
         return conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
 
 
+def list_tasks_for_project(project_id: str) -> List[sqlite3.Row]:
+    with connect() as conn:
+        return conn.execute(
+            "SELECT * FROM tasks WHERE project_id = ? ORDER BY created_at", (project_id,)
+        ).fetchall()
+
+
+def delete_task(task_id: str) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM task_items WHERE task_id = ?", (task_id,))
+        conn.execute("DELETE FROM runs WHERE task_id = ?", (task_id,))
+        conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+
+
 def set_task_context(
     task_id: str, feature_slug: str, masterminds_json: str, session_id: str
 ) -> None:
@@ -116,13 +183,40 @@ def set_task_context(
 
 
 def set_task_awaiting_clarification(
-    task_id: str, session_id: str, questions_json: str
+    task_id: str, session_id: str, questions_json: str, status: str = "awaiting_clarification"
 ) -> None:
     with connect() as conn:
         conn.execute(
-            "UPDATE tasks SET status = 'awaiting_clarification', session_id = ?, "
-            "pending_questions = ? WHERE id = ?",
-            (session_id, questions_json, task_id),
+            "UPDATE tasks SET status = ?, session_id = ?, pending_questions = ? WHERE id = ?",
+            (status, session_id, questions_json, task_id),
+        )
+
+
+def set_task_investigating(task_id: str) -> None:
+    with connect() as conn:
+        conn.execute("UPDATE tasks SET status = 'investigating' WHERE id = ?", (task_id,))
+
+
+def set_task_requirements_ready(task_id: str, session_id: str) -> None:
+    with connect() as conn:
+        conn.execute(
+            "UPDATE tasks SET status = 'requirements_ready', session_id = ?, "
+            "pending_questions = NULL WHERE id = ?",
+            (session_id, task_id),
+        )
+
+
+def set_task_planning(task_id: str) -> None:
+    with connect() as conn:
+        conn.execute("UPDATE tasks SET status = 'planning_tasks' WHERE id = ?", (task_id,))
+
+
+def set_task_tasks_ready(task_id: str, session_id: str) -> None:
+    with connect() as conn:
+        conn.execute(
+            "UPDATE tasks SET status = 'tasks_ready', session_id = ?, "
+            "pending_questions = NULL WHERE id = ?",
+            (session_id, task_id),
         )
 
 
@@ -140,12 +234,123 @@ def confirm_task_context(task_id: str) -> str:
     return confirmed_at
 
 
-def insert_run(run_id: str, task_id: str, stage: str) -> None:
+def approve_task_requirements(task_id: str) -> str:
+    approved_at = now()
     with connect() as conn:
         conn.execute(
-            "INSERT INTO runs (id, task_id, stage, status, created_at) "
-            "VALUES (?, ?, ?, 'running', ?)",
-            (run_id, task_id, stage, now()),
+            "UPDATE tasks SET requirements_approved_at = ? WHERE id = ?", (approved_at, task_id)
+        )
+    return approved_at
+
+
+def approve_task_tasks(task_id: str) -> str:
+    approved_at = now()
+    with connect() as conn:
+        conn.execute(
+            "UPDATE tasks SET tasks_approved_at = ? WHERE id = ?", (approved_at, task_id)
+        )
+    return approved_at
+
+
+def insert_task_items(task_id: str, items: List[Dict[str, Any]]) -> None:
+    with connect() as conn:
+        for i, item in enumerate(items, start=1):
+            conn.execute(
+                "INSERT INTO task_items (task_id, item_id, slug, description, assistant, status, created_at) "
+                "VALUES (?, ?, ?, ?, ?, 'pending', ?)",
+                (task_id, f"task{i}", item["slug"], item["description"], item["assistant"], now()),
+            )
+
+
+def get_task_items(task_id: str) -> List[sqlite3.Row]:
+    with connect() as conn:
+        return conn.execute(
+            "SELECT * FROM task_items WHERE task_id = ? ORDER BY item_id", (task_id,)
+        ).fetchall()
+
+
+def get_task_item(task_id: str, item_id: str) -> Optional[sqlite3.Row]:
+    with connect() as conn:
+        return conn.execute(
+            "SELECT * FROM task_items WHERE task_id = ? AND item_id = ?", (task_id, item_id)
+        ).fetchone()
+
+
+def get_next_pending_item(task_id: str) -> Optional[sqlite3.Row]:
+    with connect() as conn:
+        return conn.execute(
+            "SELECT * FROM task_items WHERE task_id = ? AND status = 'pending' ORDER BY item_id LIMIT 1",
+            (task_id,),
+        ).fetchone()
+
+
+def get_awaiting_review_item(task_id: str) -> Optional[sqlite3.Row]:
+    with connect() as conn:
+        return conn.execute(
+            "SELECT * FROM task_items WHERE task_id = ? AND status = 'awaiting_review' LIMIT 1",
+            (task_id,),
+        ).fetchone()
+
+
+def any_task_item_started(task_id: str) -> bool:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS c FROM task_items WHERE task_id = ? AND status != 'pending'", (task_id,)
+        ).fetchone()
+    return row["c"] > 0
+
+
+def all_task_items_done(task_id: str) -> bool:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS c FROM task_items WHERE task_id = ? AND status != 'done'", (task_id,)
+        ).fetchone()
+    return row["c"] == 0
+
+
+def set_task_item_assistant(task_id: str, item_id: str, assistant: str) -> None:
+    with connect() as conn:
+        conn.execute(
+            "UPDATE task_items SET assistant = ? WHERE task_id = ? AND item_id = ?",
+            (assistant, task_id, item_id),
+        )
+
+
+def set_task_item_status(task_id: str, item_id: str, status: str) -> None:
+    with connect() as conn:
+        conn.execute(
+            "UPDATE task_items SET status = ? WHERE task_id = ? AND item_id = ?",
+            (status, task_id, item_id),
+        )
+
+
+def set_task_item_session(task_id: str, item_id: str, session_id: str) -> None:
+    with connect() as conn:
+        conn.execute(
+            "UPDATE task_items SET session_id = ? WHERE task_id = ? AND item_id = ?",
+            (session_id, task_id, item_id),
+        )
+
+
+def set_task_item_baseline(task_id: str, item_id: str, baseline_diff: str) -> None:
+    with connect() as conn:
+        conn.execute(
+            "UPDATE task_items SET baseline_diff = ? WHERE task_id = ? AND item_id = ?",
+            (baseline_diff, task_id, item_id),
+        )
+
+
+def mark_task_completed(task_id: str) -> None:
+    with connect() as conn:
+        conn.execute("UPDATE tasks SET status = 'completed' WHERE id = ?", (task_id,))
+
+
+def insert_run(run_id: str, task_id: str, stage: str, item_id: Optional[str] = None) -> None:
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO runs (id, task_id, stage, item_id, status, created_at) "
+            "VALUES (?, ?, ?, ?, 'running', ?)",
+            (run_id, task_id, stage, item_id, now()),
         )
 
 
@@ -155,3 +360,13 @@ def complete_run(run_id: str, status: str, transcript: str) -> None:
             "UPDATE runs SET status = ?, transcript = ?, completed_at = ? WHERE id = ?",
             (status, transcript, now(), run_id),
         )
+
+
+def set_run_diff(run_id: str, diff: str) -> None:
+    with connect() as conn:
+        conn.execute("UPDATE runs SET diff = ? WHERE id = ?", (diff, run_id))
+
+
+def get_run(run_id: str) -> Optional[sqlite3.Row]:
+    with connect() as conn:
+        return conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()

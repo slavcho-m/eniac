@@ -1,0 +1,33 @@
+.wrapper {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-card);
+  padding: 0 12px;
+}
+
+.wrapper:focus-within {
+  border-color: var(--info-border);
+}
+
+.input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  padding: 10px 0;
+  font-size: var(--text-body);
+  color: var(--text-primary);
+}
+
+.input::placeholder {
+  color: var(--text-tertiary);
+}
+
+.adornment {
+  display: flex;
+  align-items: center;
+}

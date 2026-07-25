@@ -1,0 +1,29 @@
+.log {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-card);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--text-body);
+}
+
+.line {
+  display: flex;
+  gap: 8px;
+  color: var(--text-secondary);
+}
+
+.prefix {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+}
+
+.done .prefix {
+  color: var(--success);
+}
+
+.done {
+  color: var(--text-primary);
+}

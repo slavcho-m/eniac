@@ -1,0 +1,8 @@
+.label {
+  display: block;
+  font-size: var(--text-section);
+  font-weight: var(--weight-label);
+  letter-spacing: var(--tracking-section);
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}

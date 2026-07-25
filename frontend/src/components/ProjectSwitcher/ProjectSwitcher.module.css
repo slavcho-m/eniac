@@ -1,0 +1,35 @@
+.switcher {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 12px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-card);
+  cursor: pointer;
+  color: var(--text-primary);
+}
+
+.icon {
+  display: inline-flex;
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}
+
+.name {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  font-size: var(--text-label);
+  font-weight: var(--weight-label);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chevron {
+  display: inline-flex;
+  color: var(--text-tertiary);
+  flex-shrink: 0;
+}

@@ -1,0 +1,109 @@
+.viewer {
+  background: var(--bg-card);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-card);
+  overflow: hidden;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border-hairline);
+}
+
+.filename {
+  flex: 1;
+  font-size: var(--text-body);
+  font-weight: var(--weight-label);
+  color: var(--text-primary);
+}
+
+.copyButton {
+  display: inline-flex;
+  align-items: center;
+  background: none;
+  border: none;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  padding: 2px;
+}
+
+.copyButton:hover {
+  color: var(--text-secondary);
+}
+
+.code {
+  padding: 8px 0;
+  overflow-x: auto;
+  font-size: var(--text-body);
+}
+
+.line {
+  display: flex;
+  padding: 1px 14px;
+  white-space: pre;
+}
+
+.lineNumber {
+  flex-shrink: 0;
+  width: 32px;
+  text-align: right;
+  margin-right: 14px;
+  color: var(--text-tertiary);
+  user-select: none;
+}
+
+.add {
+  background: var(--success-bg);
+}
+.add .lineNumber {
+  color: var(--success);
+}
+.add .content {
+  color: var(--text-primary);
+}
+
+.remove {
+  background: var(--error-bg);
+}
+.remove .lineNumber {
+  color: var(--error);
+}
+.remove .content {
+  color: var(--text-primary);
+}
+
+.context .content {
+  color: var(--text-secondary);
+}
+
+.collapsed {
+  justify-content: center;
+  color: var(--text-tertiary);
+  padding: 6px 14px;
+}
+
+.footer {
+  display: flex;
+  gap: 20px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border-hairline);
+}
+
+.footerLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: var(--text-hint);
+  cursor: pointer;
+  padding: 0;
+}
+
+.footerLink:hover {
+  color: var(--text-primary);
+}

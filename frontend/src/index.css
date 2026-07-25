@@ -1,4 +1,20 @@
+@import "./styles/tokens.css";
+
+* {
+  box-sizing: border-box;
+}
+
 body {
   margin: 0;
-  font-family: system-ui, sans-serif;
+  font-family: var(--font-mono);
+  font-size: var(--text-body);
+  font-weight: var(--weight-body);
+  background: linear-gradient(to bottom, rgba(255, 255, 255, 0.04), transparent 260px), var(--bg-canvas);
+  color: var(--text-primary);
+}
+
+button,
+input,
+textarea {
+  font-family: inherit;
 }

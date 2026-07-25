@@ -1,0 +1,11 @@
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.helper {
+  margin: 0;
+  font-size: var(--text-hint);
+  color: var(--text-secondary);
+}

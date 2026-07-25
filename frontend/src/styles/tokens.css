@@ -1,0 +1,59 @@
+:root {
+  /* Typography */
+  --font-mono: "JetBrains Mono", monospace;
+
+  --text-title: 24px;
+  --weight-title: 700;
+
+  --text-label: 13.5px;
+  --weight-label: 600;
+
+  --text-body: 12.5px;
+  --weight-body: 400;
+
+  --text-section: 10.5px;
+  --tracking-section: 0.12em;
+
+  --text-hint: 10.5px;
+
+  /* Surfaces */
+  --bg-canvas: #0a0a0b;
+  --bg-panel: #0d0d0f;
+  --bg-card: #131316;
+  --border-hairline: rgba(255, 255, 255, 0.08);
+
+  /* Text */
+  --text-primary: #ededed;
+  --text-secondary: #8a8a90;
+  --text-tertiary: #666666;
+
+  /* Semantic (4-color system) — always used as low-opacity tints, never solid fills */
+  --success: #8fe3b8;
+  --success-bg: rgba(143, 227, 184, 0.12);
+  --success-border: rgba(143, 227, 184, 0.35);
+
+  --warning: #f0be72;
+  --warning-bg: rgba(240, 190, 114, 0.12);
+  --warning-border: rgba(240, 190, 114, 0.35);
+
+  --error: #e58686;
+  --error-bg: rgba(229, 134, 134, 0.12);
+  --error-border: rgba(229, 134, 134, 0.35);
+
+  --info: #94a9ee;
+  --info-bg: rgba(148, 169, 238, 0.12);
+  --info-border: rgba(148, 169, 238, 0.35);
+
+  /* Neutral — for states with no semantic meaning (e.g. a "draft" badge) */
+  --neutral-bg: rgba(255, 255, 255, 0.06);
+  --neutral-border: rgba(255, 255, 255, 0.14);
+
+  /* Buttons */
+  --btn-primary-bg: #f3f2ef;
+  --btn-primary-text: #0a0a0b;
+  --btn-secondary-border: rgba(255, 255, 255, 0.17);
+
+  /* Shape */
+  --radius-pill: 999px;
+  --radius-card: 8px;
+}

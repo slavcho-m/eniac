@@ -1,0 +1,48 @@
+.chip {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-card);
+  cursor: pointer;
+  min-width: 160px;
+}
+
+.selectedSuccess {
+  border-color: var(--success-border);
+}
+.selectedWarning {
+  border-color: var(--warning-border);
+}
+.selectedError {
+  border-color: var(--error-border);
+}
+
+.top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.stat {
+  font-size: var(--text-hint);
+  color: var(--text-tertiary);
+}
+
+.added {
+  color: var(--success);
+}
+
+.removed {
+  color: var(--error);
+}
+
+.filename {
+  font-size: var(--text-hint);
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
