@@ -153,6 +153,10 @@ export function getTaskItems(taskId: string): Promise<TaskItem[]> {
   return request(`/tasks/${taskId}/items`);
 }
 
+export function getTaskDiff(taskId: string): Promise<{ diff: string }> {
+  return request(`/tasks/${taskId}/diff`);
+}
+
 // --- Files ---
 
 export function getTaskFiles(taskId: string): Promise<TaskFile[]> {

@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS task_items (
     assistant TEXT NOT NULL,
     status TEXT NOT NULL,
     session_id TEXT,
-    baseline_diff TEXT,
+    baseline_commit TEXT,
     blocked_reason TEXT,
     created_at TEXT NOT NULL,
     PRIMARY KEY (task_id, item_id)
@@ -101,7 +101,7 @@ def init_db() -> None:
                 conn.execute(f"ALTER TABLE runs ADD COLUMN {column}")
             except sqlite3.OperationalError:
                 pass
-        for column in ("session_id TEXT", "baseline_diff TEXT", "blocked_reason TEXT"):
+        for column in ("session_id TEXT", "baseline_commit TEXT", "blocked_reason TEXT"):
             try:
                 conn.execute(f"ALTER TABLE task_items ADD COLUMN {column}")
             except sqlite3.OperationalError:
@@ -361,12 +361,25 @@ def set_task_item_session(task_id: str, item_id: str, session_id: str) -> None:
         )
 
 
-def set_task_item_baseline(task_id: str, item_id: str, baseline_diff: str) -> None:
+def set_task_item_baseline(task_id: str, item_id: str, baseline_commit: str) -> None:
     with connect() as conn:
         conn.execute(
-            "UPDATE task_items SET baseline_diff = ? WHERE task_id = ? AND item_id = ?",
-            (baseline_diff, task_id, item_id),
+            "UPDATE task_items SET baseline_commit = ? WHERE task_id = ? AND item_id = ?",
+            (baseline_commit, task_id, item_id),
         )
+
+
+def get_task_baseline_commit(task_id: str) -> Optional[str]:
+    """The checkpoint taken right before the task's first item ever ran — since that
+    checkpoint's tree equals HEAD's tree (the clean-tree guard in approve_assistant
+    guarantees this), it doubles as the anchor for a whole-task combined diff."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT baseline_commit FROM task_items WHERE task_id = ? AND baseline_commit IS NOT NULL "
+            "ORDER BY item_id LIMIT 1",
+            (task_id,),
+        ).fetchone()
+    return row["baseline_commit"] if row else None
 
 
 def mark_task_completed(task_id: str) -> None:

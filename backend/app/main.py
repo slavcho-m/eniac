@@ -548,13 +548,13 @@ async def approve_assistant(task_id: str, body: Optional[ApproveAssistantBody] =
         f"## Full Requirements\n\n{requirements_md}\n\n---\n\n## Your Task Item\n\n{item['description']}"
     )
 
-    # Snapshot the tree's diff before this item's own changes — earlier items in this same
-    # task may already be approved-but-uncommitted, and a reject on *this* item must be able
-    # to restore exactly that prior state, not wipe out earlier approved work too.
-    baseline_diff = subprocess.run(
-        ["git", "-C", str(Path(workspace_path).expanduser()), "diff"], capture_output=True, text=True
-    ).stdout
-    db.set_task_item_baseline(task_id, item["item_id"], baseline_diff)
+    # Checkpoint the tree before this item's own changes — earlier items in this same task
+    # may already be approved-but-uncommitted, and a reject on *this* item must be able to
+    # restore exactly that prior state, not wipe out earlier approved work too. Also doubles
+    # as the diff anchor so this item's own changes can be isolated from theirs (§ runs.py
+    # create_checkpoint).
+    baseline_commit = runs.create_checkpoint(Path(workspace_path).expanduser())
+    db.set_task_item_baseline(task_id, item["item_id"], baseline_commit)
 
     run_id = runs.new_run_id("execution", f"{task['feature_slug']}-{item['item_id']}")
     db.insert_run(run_id, task_id, "execution", item_id=item["item_id"])
@@ -604,19 +604,11 @@ async def review_artifact(task_id: str, body: ReviewArtifactBody):
 
     project = db.get_project(task["project_id"])
     workspace_path = Path(project["workspace_path"]).expanduser()
-    # Revert to exactly the state before this item's own changes: wipe everything (tracked
-    # changes only — see below), then reapply the baseline diff captured just before this
-    # item ran, which restores any earlier items in this task that are approved but still
-    # deliberately uncommitted. Without this, a reject would also discard prior approved work.
-    # ponytail: `checkout -- .` only reverts tracked-file changes, not new untracked files
-    # the Assistant may have created — a full pristine reset (git clean -fd) is too
-    # destructive to run unconditionally against a real workspace.
-    subprocess.run(["git", "-C", str(workspace_path), "checkout", "--", "."], check=False)
-    if item["baseline_diff"] and item["baseline_diff"].strip():
-        subprocess.run(
-            ["git", "-C", str(workspace_path), "apply"],
-            input=item["baseline_diff"], text=True, check=False,
-        )
+    # Revert to exactly the state before this item's own changes, restoring any earlier
+    # items in this task that are approved but still deliberately uncommitted. Without this,
+    # a reject would also discard prior approved work.
+    if item["baseline_commit"]:
+        runs.restore_checkpoint(workspace_path, item["baseline_commit"])
 
     masterminds = json.loads(task["masterminds"])
     first_mastermind = masterminds[0]
@@ -670,6 +662,29 @@ def list_task_items(task_id: str):
     if db.get_task(task_id) is None:
         raise HTTPException(404, f"task '{task_id}' not found")
     return [_serialize_task_item(item, task_id) for item in db.get_task_items(task_id)]
+
+
+@app.get("/tasks/{task_id}/diff")
+def get_task_diff(task_id: str):
+    """The whole task's combined diff — every approved (and currently pending-review) item's
+    changes together, as opposed to a single item's isolated diff (`items[].latest_run.diff`).
+    Anchored on the first item's checkpoint rather than plain `git diff`/HEAD, since that's
+    exactly the tree the task started from (see db.get_task_baseline_commit)."""
+    task = db.get_task(task_id)
+    if task is None:
+        raise HTTPException(404, f"task '{task_id}' not found")
+
+    baseline_commit = db.get_task_baseline_commit(task_id)
+    if baseline_commit is None:
+        return {"diff": ""}
+
+    project = db.get_project(task["project_id"])
+    workspace_path = project["workspace_path"]
+    if not workspace_path or not Path(workspace_path).expanduser().is_dir():
+        raise HTTPException(409, "workspace_path is missing or no longer exists")
+
+    diff = runs.working_tree_diff(Path(workspace_path).expanduser(), since=baseline_commit)
+    return {"diff": diff}
 
 
 @app.get("/agents/masterminds")

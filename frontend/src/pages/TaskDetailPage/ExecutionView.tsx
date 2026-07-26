@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Badge, Button, DiffSummaryChip, DiffViewer, PromptInput, SectionLabel, StatusBanner } from "@/components";
 import type { BadgeVariant } from "@/components";
-import { approveAssistant, reviewArtifact } from "@/lib/api";
+import { approveAssistant, getTaskDiff, reviewArtifact } from "@/lib/api";
 import { parseDiff } from "@/lib/parseDiff";
 import type { Task, TaskItem, TaskItemStatus } from "@/types/api";
 import { InFlightView } from "./InFlightView";
@@ -21,6 +21,12 @@ interface ExecutionViewProps {
   onRunStarted: (runId: string) => void;
 }
 
+// What diff is currently shown: the item awaiting the user's decision ("actionable" — the
+// only mode with Approve/Reject controls), a past item's own stored diff replayed read-only
+// ("item"), or every item's changes combined ("all", fetched on demand from the backend
+// since — unlike a single item's diff — it isn't cached on any TaskItem already in hand).
+type ViewMode = { kind: "actionable" } | { kind: "item"; itemId: string } | { kind: "all" };
+
 /**
  * No Override Assistant picker yet — that needs a dropdown/modal pattern this component
  * library doesn't have (deliberately not building one just for this), so items run with
@@ -29,6 +35,10 @@ interface ExecutionViewProps {
  */
 export function ExecutionView({ task, items, onRefetch, onRunStarted }: ExecutionViewProps) {
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<ViewMode>({ kind: "actionable" });
+  const [allDiff, setAllDiff] = useState<string | null>(null);
+  const [allDiffLoading, setAllDiffLoading] = useState(false);
+  const [allDiffError, setAllDiffError] = useState<string | null>(null);
   const [feedback, setFeedback] = useState("");
   const [showFeedbackForm, setShowFeedbackForm] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -39,8 +49,63 @@ export function ExecutionView({ task, items, onRefetch, onRunStarted }: Executio
   const blocked = items?.find((item) => item.status === "blocked");
   const actionable = awaitingReview ?? blocked;
   const nextPending = items?.find((item) => item.status === "pending");
-  const parsedFiles = actionable?.latest_run?.diff ? parseDiff(actionable.latest_run.diff) : [];
+  const hasAnyDiff = items?.some((item) => item.latest_run?.diff) ?? false;
+
+  // A later item's diff can touch files an earlier item already changed — reset back to
+  // reviewing whichever item actually needs a decision whenever that target changes, so a
+  // stale historical/combined view doesn't linger in front of the Approve/Reject controls.
+  useEffect(() => {
+    setViewMode({ kind: "actionable" });
+    setSelectedFile(null);
+  }, [actionable?.item_id]);
+
+  const viewedItem = viewMode.kind === "item" ? items?.find((item) => item.item_id === viewMode.itemId) : undefined;
+
+  const viewedDiff =
+    viewMode.kind === "all" ? allDiff : viewMode.kind === "item" ? (viewedItem?.latest_run?.diff ?? null) : (actionable?.latest_run?.diff ?? null);
+
+  const parsedFiles = viewedDiff ? parseDiff(viewedDiff) : [];
   const activeFile = parsedFiles.find((file) => file.filename === selectedFile) ?? parsedFiles[0];
+
+  const headerLabel =
+    viewMode.kind === "all"
+      ? "All Changes"
+      : viewMode.kind === "item"
+        ? viewedItem?.slug
+        : actionable
+          ? `${blocked ? "Blocked" : "Review"}: ${actionable.slug}`
+          : null;
+
+  const summaryText =
+    viewMode.kind === "item"
+      ? viewedItem?.latest_run?.summary
+      : viewMode.kind === "actionable" && !blocked
+        ? awaitingReview?.latest_run?.summary
+        : undefined;
+
+  function selectItemRow(item: TaskItem) {
+    if (item.item_id === actionable?.item_id) {
+      setViewMode({ kind: "actionable" });
+    } else if (item.latest_run?.diff) {
+      setViewMode({ kind: "item", itemId: item.item_id });
+    }
+    setSelectedFile(null);
+  }
+
+  async function handleViewAll() {
+    setViewMode({ kind: "all" });
+    setSelectedFile(null);
+    setAllDiffError(null);
+    setAllDiffLoading(true);
+    try {
+      const result = await getTaskDiff(task.id);
+      setAllDiff(result.diff);
+    } catch (err) {
+      setAllDiffError(err instanceof Error ? err.message : "Failed to load combined diff.");
+    } finally {
+      setAllDiffLoading(false);
+    }
+  }
 
   async function handleRunAssistant() {
     setSubmitting(true);
@@ -94,19 +159,49 @@ export function ExecutionView({ task, items, onRefetch, onRunStarted }: Executio
     <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
       <div style={{ flex: 1, overflowY: "auto", minHeight: 0, display: "flex", flexDirection: "column", gap: 20 }}>
         <div>
-          <SectionLabel>Task Items</SectionLabel>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <SectionLabel>Task Items</SectionLabel>
+            {hasAnyDiff ? (
+              <Button variant="secondary" onClick={handleViewAll} disabled={allDiffLoading}>
+                {viewMode.kind === "all" ? "Viewing All Changes" : "View All Changes"}
+              </Button>
+            ) : null}
+          </div>
           <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
-            {(items ?? []).map((item) => (
-              <div key={item.item_id} style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <Badge variant={BADGE_BY_ITEM_STATUS[item.status].variant}>
-                  {BADGE_BY_ITEM_STATUS[item.status].label}
-                </Badge>
-                <span style={{ fontSize: "var(--text-body)", color: "var(--text-primary)" }}>{item.slug}</span>
-                <span style={{ fontSize: "var(--text-hint)", color: "var(--text-tertiary)" }}>
-                  {item.assistant}
-                </span>
-              </div>
-            ))}
+            {(items ?? []).map((item) => {
+              const clickable = item.item_id === actionable?.item_id || Boolean(item.latest_run?.diff);
+              const active =
+                (viewMode.kind === "actionable" && item.item_id === actionable?.item_id) ||
+                (viewMode.kind === "item" && viewMode.itemId === item.item_id);
+              return (
+                <button
+                  key={item.item_id}
+                  type="button"
+                  onClick={clickable ? () => selectItemRow(item) : undefined}
+                  disabled={!clickable}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    background: "none",
+                    border: "none",
+                    padding: "2px 0",
+                    font: "inherit",
+                    textAlign: "left",
+                    cursor: clickable ? "pointer" : "default",
+                    opacity: clickable ? (active ? 1 : 0.85) : 0.6,
+                  }}
+                >
+                  <Badge variant={BADGE_BY_ITEM_STATUS[item.status].variant}>
+                    {BADGE_BY_ITEM_STATUS[item.status].label}
+                  </Badge>
+                  <span style={{ fontSize: "var(--text-body)", color: "var(--text-primary)" }}>{item.slug}</span>
+                  <span style={{ fontSize: "var(--text-hint)", color: "var(--text-tertiary)" }}>
+                    {item.assistant}
+                  </span>
+                </button>
+              );
+            })}
           </div>
         </div>
 
@@ -121,30 +216,56 @@ export function ExecutionView({ task, items, onRefetch, onRunStarted }: Executio
           />
         ) : null}
 
-        {actionable ? (
+        {headerLabel ? (
           <div>
-            <SectionLabel>{blocked ? "Blocked" : "Review"}: {actionable.slug}</SectionLabel>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <SectionLabel>{headerLabel}</SectionLabel>
+              {viewMode.kind !== "actionable" ? (
+                <Button variant="ghost" onClick={() => setViewMode({ kind: "actionable" })}>
+                  Back to Review
+                </Button>
+              ) : null}
+            </div>
 
-            {blocked ? (
+            {viewMode.kind === "actionable" && blocked ? (
               <div style={{ marginTop: 8 }}>
                 <StatusBanner variant="error">{blocked.blocked_reason}</StatusBanner>
               </div>
             ) : null}
 
-            {!blocked && awaitingReview?.latest_run?.summary ? (
+            {summaryText ? (
               <p style={{ marginTop: 8, color: "var(--text-secondary)", fontSize: "var(--text-body)" }}>
-                {awaitingReview.latest_run.summary}
+                {summaryText}
               </p>
             ) : null}
 
-            {!blocked && parsedFiles.length === 0 ? (
+            {viewMode.kind === "all" && allDiffLoading ? (
+              <p style={{ marginTop: 12, color: "var(--text-tertiary)", fontSize: "var(--text-body)" }}>
+                Loading…
+              </p>
+            ) : null}
+
+            {viewMode.kind === "all" && allDiffError ? (
+              <p style={{ marginTop: 12, color: "var(--error)", fontSize: "var(--text-body)" }}>{allDiffError}</p>
+            ) : null}
+
+            {!allDiffLoading && !(viewMode.kind === "actionable" && blocked) && parsedFiles.length === 0 ? (
               <p style={{ marginTop: 12, color: "var(--text-tertiary)", fontSize: "var(--text-body)" }}>
                 No file changes were made.
               </p>
             ) : null}
 
             {parsedFiles.length > 1 ? (
-              <div style={{ display: "flex", gap: 12, marginTop: 8, marginBottom: 12 }}>
+              <div
+                style={{
+                  display: "flex",
+                  gap: 12,
+                  marginTop: 8,
+                  marginBottom: 12,
+                  overflowX: "auto",
+                  paddingBottom: 4,
+                }}
+              >
                 {parsedFiles.map((file) => (
                   <DiffSummaryChip
                     key={file.filename}
@@ -176,7 +297,7 @@ export function ExecutionView({ task, items, onRefetch, onRunStarted }: Executio
         ) : null}
       </div>
 
-      {actionable ? (
+      {actionable && viewMode.kind === "actionable" ? (
         <div style={{ flexShrink: 0, borderTop: "1px solid var(--border-hairline)", marginTop: 16, paddingTop: 16 }}>
           {showFeedbackForm ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>

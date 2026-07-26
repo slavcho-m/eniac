@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import subprocess
+import tempfile
 import uuid
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional
@@ -41,6 +43,38 @@ ASSISTANT_TOOLS = {
 }
 
 
+# On a fresh call, the stage's prompt.md carries the JSON-output contract. A resumed call
+# (-r) sends only the new turn's text, relying on the model to recall that contract purely
+# from conversation history — which drifts over enough turns (seen live: a 15-turn execution
+# resume replied in plain prose instead of {"status": "done", ...}, crashing json.loads).
+# Re-asserting the shape on every resumed turn costs a couple lines of prompt, not a full
+# prompt.md re-send, and keeps the contract from depending on how long the session has run.
+_RESUME_REMINDERS = {
+    "context": (
+        'Reminder: respond with only a single JSON object -- no markdown fences, no prose '
+        'before or after it -- either {"status": "needs_clarification", "questions": [...]} '
+        'or {"status": "ready", "feature_slug": ..., "goal": ..., "constraints": [...], '
+        '"masterminds": [...], "reasoning": ...}.'
+    ),
+    "requirements": (
+        'Reminder: respond with only a single JSON object -- no markdown fences, no prose '
+        'before or after it -- either {"status": "needs_clarification", "questions": [...]} '
+        'or {"status": "ready", "summary": ..., "requirements": [...], "affected_files": [...], '
+        '"out_of_scope": [...], "open_risks": [...]}.'
+    ),
+    "tasks": (
+        'Reminder: respond with only a single JSON object -- no markdown fences, no prose '
+        'before or after it -- either {"status": "needs_clarification", "questions": [...]} '
+        'or {"status": "ready", "tasks": [{"slug": ..., "description": ..., "assistant": ...}, ...]}.'
+    ),
+    "execution": (
+        'Reminder: respond with only a single JSON object -- no markdown fences, no prose '
+        'before or after it -- either {"status": "done", "summary": ...} or '
+        '{"status": "blocked", "reason": ...}.'
+    ),
+}
+
+
 def mastermind_prompt_path(mastermind: str) -> Path:
     return MASTERMINDS_DIR / mastermind / "prompt.md"
 
@@ -74,29 +108,87 @@ def _process_failure_reason(returncode: Optional[int], transcript: str) -> str:
     return f"claude exited with code {returncode}:\n{tail}"
 
 
-def _working_tree_diff(cwd: Path) -> str:
-    """`git diff` alone omits untracked files entirely, so an Assistant creating a brand
-    new file (not just editing existing ones) showed up as an empty diff — real bug found
-    live against a real repo. Appends each untracked file (respecting .gitignore) as a
-    `--no-index` add-diff, which produces the same `diff --git`/`new file mode` header
-    shape as a tracked addition, so the frontend's parseDiff needs no changes."""
-    tracked = subprocess.run(
-        ["git", "-C", str(cwd), "diff"], capture_output=True, text=True
-    ).stdout
-    untracked_files = subprocess.run(
+def _snapshot_tree(cwd: Path) -> str:
+    """Writes a real git tree object for the current working tree (tracked edits +
+    untracked files, respecting .gitignore) without touching the repo's actual index —
+    `add -A`/`write-tree` run against a throwaway `GIT_INDEX_FILE` that's discarded when
+    this returns, so `git status` sees nothing different."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        env = {**os.environ, "GIT_INDEX_FILE": str(Path(tmp_dir) / "index")}
+        subprocess.run(["git", "-C", str(cwd), "add", "-A"], env=env, check=True)
+        return subprocess.run(
+            ["git", "-C", str(cwd), "write-tree"], env=env, capture_output=True, text=True, check=True
+        ).stdout.strip()
+
+
+def create_checkpoint(cwd: Path) -> str:
+    """Snapshots the current working tree into a real commit object, without moving any
+    ref, branch, or HEAD. Eniac never auto-commits (the user reviews diffs before anything
+    becomes a real commit); this stays true to that since `git status`/`git log` see
+    nothing different, but gives us a real git object to diff/restore against instead of a
+    hand-rolled patch-text snapshot.
+
+    Used both to isolate one task item's own diff from earlier items' uncommitted changes
+    (`working_tree_diff(cwd, since=checkpoint)`), and to cleanly revert to exactly this
+    point on reject (`restore_checkpoint`).
+    """
+    tree = _snapshot_tree(cwd)
+    head = subprocess.run(["git", "-C", str(cwd), "rev-parse", "HEAD"], capture_output=True, text=True)
+    commit_cmd = ["git", "-C", str(cwd), "commit-tree", tree, "-m", "eniac checkpoint"]
+    if head.returncode == 0:
+        commit_cmd += ["-p", head.stdout.strip()]
+    return subprocess.run(commit_cmd, capture_output=True, text=True, check=True).stdout.strip()
+
+
+def restore_checkpoint(cwd: Path, checkpoint: str) -> None:
+    """Resets the working tree back to exactly what `checkpoint` recorded — used when a
+    task item is rejected, to undo just that item's changes without touching earlier
+    items in the same task that are already approved but still deliberately uncommitted.
+
+    `read-tree --reset -u` handles every path that was in the real index, but Eniac never
+    stages anything for real, so a file a rejected item newly created was never in the
+    real index to begin with — `read-tree` has no record to remove it by, and leaves it
+    sitting on disk. Cleaned up here as an explicit second pass: any currently-untracked
+    file that isn't part of the checkpoint's own tree gets deleted directly.
+    """
+    subprocess.run(["git", "-C", str(cwd), "read-tree", "--reset", "-u", checkpoint], check=False)
+    untracked = subprocess.run(
         ["git", "-C", str(cwd), "ls-files", "--others", "--exclude-standard"],
         capture_output=True,
         text=True,
     ).stdout.splitlines()
-    untracked_diffs = [
-        subprocess.run(
-            ["git", "-C", str(cwd), "diff", "--no-index", "/dev/null", path],
-            capture_output=True,
-            text=True,
-        ).stdout
-        for path in untracked_files
-    ]
-    return tracked + "".join(untracked_diffs)
+    for path in untracked:
+        in_checkpoint = (
+            subprocess.run(
+                ["git", "-C", str(cwd), "cat-file", "-e", f"{checkpoint}:{path}"],
+                capture_output=True,
+            ).returncode
+            == 0
+        )
+        if not in_checkpoint:
+            (cwd / path).unlink(missing_ok=True)
+
+
+def working_tree_diff(cwd: Path, since: Optional[str] = None) -> str:
+    """Diffs the working tree against `since` (a checkpoint commit) if given, or HEAD
+    otherwise. Snapshots the current state into its own tree first and does a plain
+    tree-to-tree `git diff`, rather than comparing against the repo's real index.
+
+    That matters for untracked files specifically: an earlier version of this function did
+    a plain `git diff` (tracked only) plus a manual per-untracked-file `--no-index` pass —
+    but `git diff <commit>` resolves *presence* against the real index, not the working
+    directory, so a path that exists in `since`'s tree yet was never added to the real repo
+    index (true of every untracked file Eniac ever creates) showed up as a bogus full
+    delete from that pass, *and* as a bogus brand-new file from the manual untracked pass —
+    one real edit rendered as two contradictory diffs. Comparing two real trees sidesteps
+    the real index entirely, so a file edited across two checkpoints — tracked or not —
+    always nets out to exactly one incremental diff.
+    """
+    current_tree = _snapshot_tree(cwd)
+    base = since if since else "HEAD"
+    return subprocess.run(
+        ["git", "-C", str(cwd), "diff", base, current_tree], capture_output=True, text=True
+    ).stdout
 
 
 def _extract_balanced_object(text: str) -> Optional[str]:
@@ -409,7 +501,9 @@ async def start_run(
         tool_flags = []
 
     if resume_session_id is not None:
-        command = ["claude", "-r", resume_session_id, "-p", prompt, "--output-format", "json", *tool_flags]
+        reminder = _RESUME_REMINDERS.get(stage)
+        resumed_prompt = f"{prompt}\n\n---\n\n{reminder}" if reminder else prompt
+        command = ["claude", "-r", resume_session_id, "-p", resumed_prompt, "--output-format", "json", *tool_flags]
     else:
         if stage == "context":
             stage_prompt = SUPERVISOR_PROMPT_PATH.read_text()
@@ -527,7 +621,9 @@ async def start_run(
                 db.set_task_item_session(task_id, item_id, session_id)
 
                 assert cwd is not None
-                db.set_run_diff(run_id, _working_tree_diff(cwd), summary=data.get("summary"))
+                item_row = db.get_task_item(task_id, item_id)
+                since = item_row["baseline_commit"] if item_row else None
+                db.set_run_diff(run_id, working_tree_diff(cwd, since=since), summary=data.get("summary"))
 
                 if data["status"] == "done":
                     db.set_task_item_status(task_id, item_id, "awaiting_review")
