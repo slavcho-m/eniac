@@ -13,7 +13,7 @@ import {
   SectionLabel,
   StatusBanner,
   TextInput,
-} from "./components";
+} from "@/components";
 
 function LeftNav() {
   return (
@@ -86,8 +86,8 @@ function TaskDetailPage() {
     <AppShell left={<LeftNav />} right={<RightFiles />}>
       <SectionLabel>Task #128</SectionLabel>
       <p style={{ fontSize: "var(--text-label)", color: "var(--text-primary)", marginTop: 6 }}>
-        Add a Stripe webhook handler that validates signatures, updates order status, and writes an audit log entry
-        for every event.
+        Add a Stripe webhook handler that validates signatures, updates order status, and writes an audit log
+        entry for every event.
       </p>
 
       <div style={{ marginTop: 16 }}>
@@ -132,7 +132,7 @@ function NewProjectPage() {
             <NumberedSteps
               steps={[
                 <>
-                  Eniac creates <a href="#">~/.eniac/ppm/payments-gateway/</a> and initializes conventions.
+                  Eniac creates <code>~/.eniac/ppm/payments-gateway/</code> and initializes conventions.
                 </>,
                 "You'll land in the empty project view, ready to write your first prompt.",
               ]}

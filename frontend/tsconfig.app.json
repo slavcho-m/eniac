@@ -16,11 +16,23 @@
     "noEmit": true,
     "jsx": "react-jsx",
 
+    /* Strictness */
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+
     /* Linting */
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "erasableSyntaxOnly": true,
-    "noFallthroughCasesInSwitch": true
+    "noFallthroughCasesInSwitch": true,
+
+    /* Path aliases — no baseUrl needed: bundler resolution mode (TS 5+) resolves
+       "paths" relative to this file without it, and tsgolint (oxlint's type-aware
+       linter) rejects baseUrl outright as a removed option. */
+    "paths": {
+      "@/*": ["./src/*"]
+    }
   },
   "include": ["src"]
 }

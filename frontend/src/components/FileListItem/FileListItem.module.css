@@ -2,9 +2,13 @@
   display: flex;
   align-items: center;
   gap: 10px;
+  width: 100%;
   padding: 10px 12px;
-  border-radius: var(--radius-card);
+  background: none;
   border: 1px solid transparent;
+  border-radius: var(--radius-card);
+  font: inherit;
+  text-align: left;
 }
 
 .active {

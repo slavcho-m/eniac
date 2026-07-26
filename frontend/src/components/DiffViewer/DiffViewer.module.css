@@ -40,8 +40,14 @@
   font-size: var(--text-body);
 }
 
+.codeInner {
+  display: inline-block;
+  min-width: 100%;
+}
+
 .line {
   display: flex;
+  box-sizing: border-box;
   padding: 1px 14px;
   white-space: pre;
 }

@@ -7,6 +7,7 @@ export type { BadgeVariant } from "./Badge/Badge";
 export { SectionLabel } from "./SectionLabel/SectionLabel";
 export { TextInput } from "./TextInput/TextInput";
 export { Textarea } from "./Textarea/Textarea";
+export { PromptInput } from "./PromptInput/PromptInput";
 export { Checkbox } from "./Checkbox/Checkbox";
 
 export { StatusBanner } from "./StatusBanner/StatusBanner";
@@ -34,3 +35,6 @@ export { LinkList } from "./LinkList/LinkList";
 
 export { AppShell } from "./AppShell/AppShell";
 export { PageHeader } from "./PageHeader/PageHeader";
+
+export { Dialog } from "./Dialog/Dialog";
+export { ConfirmDialog } from "./ConfirmDialog/ConfirmDialog";

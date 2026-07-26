@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Set
 
@@ -29,7 +30,11 @@ NAME_RE = re.compile(r"^[a-z0-9_-]+$")
 _background_tasks: Set[asyncio.Task] = set()
 
 
-def _fire_and_forget(coro) -> None:
+def _fire_and_forget(run_id: str, coro) -> None:
+    # Registers the run's message queue synchronously, before the response handing
+    # `run_id` to the client goes out — otherwise the client's WebSocket can connect
+    # before this scheduled task has run any of its own code.
+    runs.register_run(run_id)
     task = asyncio.create_task(coro)
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
@@ -61,6 +66,10 @@ class ApproveAssistantBody(BaseModel):
     assistant: Optional[str] = None
 
 
+class WriteFileBody(BaseModel):
+    content: str
+
+
 @app.on_event("startup")
 def on_startup() -> None:
     db.init_db()
@@ -72,6 +81,33 @@ def _git_status_porcelain(workspace_path: str) -> Optional[str]:
         ["git", "-C", workspace_path, "status", "--porcelain"], capture_output=True, text=True
     )
     return result.stdout if result.returncode == 0 else None
+
+
+def _resolve_ppm_path(relative_path: str) -> Path:
+    """Resolves a path relative to PPM_ROOT, rejecting anything that escapes it (including
+    via `..` traversal) — the only path shape accepted from a client is relative, so an
+    absolute-path bypass isn't possible in the first place."""
+    resolved = (db.PPM_ROOT / relative_path).resolve()
+    if not resolved.is_relative_to(db.PPM_ROOT.resolve()):
+        raise HTTPException(400, "path must resolve within the PPM directory")
+    return resolved
+
+
+@app.get("/files")
+def read_file(path: str):
+    resolved = _resolve_ppm_path(path)
+    if not resolved.is_file():
+        raise HTTPException(404, f"file '{path}' not found")
+    return {"path": path, "content": resolved.read_text()}
+
+
+@app.put("/files")
+def write_file(path: str, body: WriteFileBody):
+    resolved = _resolve_ppm_path(path)
+    if not resolved.is_file():
+        raise HTTPException(404, f"file '{path}' not found — can only edit files that already exist")
+    resolved.write_text(body.content)
+    return {"path": path, "written": True}
 
 
 def create_ppm_skeleton(name: str, workspace_path: Optional[str]) -> None:
@@ -133,14 +169,15 @@ def update_project(project_id: str, body: ProjectUpdate):
 
 
 @app.delete("/projects/{project_id}")
-def delete_project(project_id: str, confirm: bool = False):
+def delete_project(project_id: str, confirm: bool = False, delete_ppm: bool = False):
     if db.get_project(project_id) is None:
         raise HTTPException(404, f"project '{project_id}' not found")
     if not confirm:
         raise HTTPException(400, "pass ?confirm=true to delete a project")
 
     db.delete_project(project_id)
-    shutil.rmtree(db.PPM_ROOT / project_id, ignore_errors=True)
+    if delete_ppm:
+        shutil.rmtree(db.PPM_ROOT / project_id, ignore_errors=True)
     return {"id": project_id, "deleted": True}
 
 
@@ -154,7 +191,7 @@ async def create_task(project_id: str, body: TaskCreateBody):
 
     run_id = runs.new_run_id("context", body.prompt)
     db.insert_run(run_id, task_id, "context")
-    _fire_and_forget(runs.start_run(run_id, task_id, project_id, body.prompt, "context"))
+    _fire_and_forget(run_id, runs.start_run(run_id, task_id, project_id, body.prompt, "context"))
 
     return {"task_id": task_id, "run_id": run_id}
 
@@ -173,6 +210,7 @@ def _serialize_task(task) -> dict:
         "pending_questions": (
             json.loads(task["pending_questions"]) if task["pending_questions"] else None
         ),
+        "error": task["error"],
     }
 
 
@@ -197,6 +235,55 @@ def delete_task(task_id: str):
         raise HTTPException(404, f"task '{task_id}' not found")
     db.delete_task(task_id)
     return {"id": task_id, "deleted": True}
+
+
+CANONICAL_FEATURE_FILES = ("context.md", "requirements.md", "tasks.md")
+_APPROVED_AT_FIELD_BY_FILE = {
+    "context.md": "context_confirmed_at",
+    "requirements.md": "requirements_approved_at",
+    "tasks.md": "tasks_approved_at",
+}
+_READY_STATUS_BY_FILE = {
+    "context.md": "context_ready",
+    "requirements.md": "requirements_ready",
+    "tasks.md": "tasks_ready",
+}
+
+
+@app.get("/tasks/{task_id}/files")
+def list_task_files(task_id: str):
+    task = db.get_task(task_id)
+    if task is None:
+        raise HTTPException(404, f"task '{task_id}' not found")
+    if task["feature_slug"] is None:
+        return []
+
+    first_mastermind = json.loads(task["masterminds"])[0]
+    feature_dir = db.PPM_ROOT / task["project_id"] / first_mastermind / "features" / task["feature_slug"]
+
+    files = []
+    for name in CANONICAL_FEATURE_FILES:
+        file_path = feature_dir / name
+        exists = file_path.is_file()
+        if task[_APPROVED_AT_FIELD_BY_FILE[name]]:
+            status = "approved"
+        elif exists and task["status"] == _READY_STATUS_BY_FILE[name]:
+            status = "awaiting_approval"
+        else:
+            status = "draft"
+        files.append(
+            {
+                "name": name,
+                "path": str(file_path.relative_to(db.PPM_ROOT)),
+                "status": status,
+                "modified_at": (
+                    datetime.fromtimestamp(file_path.stat().st_mtime, tz=timezone.utc).isoformat()
+                    if exists
+                    else None
+                ),
+            }
+        )
+    return files
 
 
 STAGE_BY_CLARIFICATION_STATUS = {
@@ -225,6 +312,7 @@ async def respond(task_id: str, body: RespondBody):
     run_id = runs.new_run_id(stage, body.answer)
     db.insert_run(run_id, task_id, stage)
     _fire_and_forget(
+        run_id,
         runs.start_run(
             run_id,
             task_id,
@@ -233,7 +321,59 @@ async def respond(task_id: str, body: RespondBody):
             stage,
             resume_session_id=task["session_id"],
             **extra,
-        )
+        ),
+    )
+
+    return {"task_id": task_id, "run_id": run_id}
+
+
+IN_FLIGHT_STATUS_BY_STAGE = {
+    "context": "running",
+    "requirements": "investigating",
+    "tasks": "planning_tasks",
+    "execution": "tasks_ready",
+}
+
+
+@app.post("/tasks/{task_id}/retry")
+async def retry_task(task_id: str):
+    """Replays the run that failed, using exactly the inputs it was started with
+    (`runs.replay_params`) — recovers a task/item stuck in `failed` without redoing any
+    already-approved stage."""
+    task = db.get_task(task_id)
+    if task is None:
+        raise HTTPException(404, f"task '{task_id}' not found")
+    if task["status"] != "failed":
+        raise HTTPException(409, f"task is not failed (status: {task['status']})")
+
+    last_run = db.get_latest_run_for_task(task_id)
+    if last_run is None or last_run["replay_params"] is None:
+        raise HTTPException(409, "no retryable run found for this task")
+
+    replay = json.loads(last_run["replay_params"])
+    stage = last_run["stage"]
+    item_id = last_run["item_id"]
+
+    db.clear_task_failure(task_id, IN_FLIGHT_STATUS_BY_STAGE[stage])
+    if item_id is not None:
+        db.set_task_item_status(task_id, item_id, "in_progress")
+
+    run_id = runs.new_run_id(stage, replay["prompt"])
+    db.insert_run(run_id, task_id, stage, item_id=item_id)
+    _fire_and_forget(
+        run_id,
+        runs.start_run(
+            run_id,
+            task_id,
+            task["project_id"],
+            replay["prompt"],
+            stage,
+            resume_session_id=replay["resume_session_id"],
+            mastermind=replay["mastermind"],
+            workspace_path=replay["workspace_path"],
+            assistant=replay["assistant"],
+            item_id=item_id,
+        ),
     )
 
     return {"task_id": task_id, "run_id": run_id}
@@ -274,6 +414,7 @@ async def confirm_context(task_id: str):
     db.insert_run(run_id, task_id, "requirements")
     db.set_task_investigating(task_id)
     _fire_and_forget(
+        run_id,
         runs.start_run(
             run_id,
             task_id,
@@ -282,7 +423,7 @@ async def confirm_context(task_id: str):
             "requirements",
             mastermind=first_mastermind,
             workspace_path=workspace_path,
-        )
+        ),
     )
 
     return {"task_id": task_id, "context_confirmed_at": confirmed_at, "run_id": run_id}
@@ -315,6 +456,7 @@ async def approve_requirements(task_id: str):
     db.insert_run(run_id, task_id, "tasks")
     db.set_task_planning(task_id)
     _fire_and_forget(
+        run_id,
         runs.start_run(
             run_id,
             task_id,
@@ -325,7 +467,7 @@ async def approve_requirements(task_id: str):
             resume_session_id=task["session_id"],
             mastermind=first_mastermind,
             workspace_path=workspace_path,
-        )
+        ),
     )
 
     return {"task_id": task_id, "requirements_approved_at": approved_at, "run_id": run_id}
@@ -418,6 +560,7 @@ async def approve_assistant(task_id: str, body: Optional[ApproveAssistantBody] =
     db.insert_run(run_id, task_id, "execution", item_id=item["item_id"])
     db.set_task_item_status(task_id, item["item_id"], "in_progress")
     _fire_and_forget(
+        run_id,
         runs.start_run(
             run_id,
             task_id,
@@ -428,7 +571,7 @@ async def approve_assistant(task_id: str, body: Optional[ApproveAssistantBody] =
             assistant=assistant,
             workspace_path=workspace_path,
             item_id=item["item_id"],
-        )
+        ),
     )
 
     return {"task_id": task_id, "item_id": item["item_id"], "assistant": assistant, "run_id": run_id}
@@ -482,6 +625,7 @@ async def review_artifact(task_id: str, body: ReviewArtifactBody):
     db.insert_run(run_id, task_id, "execution", item_id=item["item_id"])
     db.set_task_item_status(task_id, item["item_id"], "in_progress")
     _fire_and_forget(
+        run_id,
         runs.start_run(
             run_id,
             task_id,
@@ -493,10 +637,54 @@ async def review_artifact(task_id: str, body: ReviewArtifactBody):
             assistant=item["assistant"],
             workspace_path=str(workspace_path),
             item_id=item["item_id"],
-        )
+        ),
     )
 
     return {"task_id": task_id, "item_id": item["item_id"], "status": "in_progress", "run_id": run_id}
+
+
+def _serialize_task_item(item, task_id: str) -> dict:
+    latest_run = db.get_latest_run_for_item(task_id, item["item_id"])
+    return {
+        "item_id": item["item_id"],
+        "slug": item["slug"],
+        "description": item["description"],
+        "assistant": item["assistant"],
+        "status": item["status"],
+        "blocked_reason": item["blocked_reason"],
+        "latest_run": (
+            {
+                "id": latest_run["id"],
+                "status": latest_run["status"],
+                "diff": latest_run["diff"],
+                "summary": latest_run["summary"],
+            }
+            if latest_run is not None
+            else None
+        ),
+    }
+
+
+@app.get("/tasks/{task_id}/items")
+def list_task_items(task_id: str):
+    if db.get_task(task_id) is None:
+        raise HTTPException(404, f"task '{task_id}' not found")
+    return [_serialize_task_item(item, task_id) for item in db.get_task_items(task_id)]
+
+
+@app.get("/agents/masterminds")
+def list_masterminds():
+    return sorted(runs.KNOWN_MASTERMINDS)
+
+
+@app.get("/agents/masterminds/{mastermind}/assistants")
+def list_mastermind_assistants(mastermind: str):
+    if mastermind not in runs.MASTERMIND_ASSISTANTS:
+        raise HTTPException(404, f"Mastermind '{mastermind}' not found")
+    return [
+        {"name": assistant, "configured": runs.assistant_prompt_path(mastermind, assistant).exists()}
+        for assistant in sorted(runs.MASTERMIND_ASSISTANTS[mastermind])
+    ]
 
 
 @app.get("/runs/{run_id}")
@@ -511,6 +699,7 @@ def get_run(run_id: str):
         "item_id": run["item_id"],
         "status": run["status"],
         "diff": run["diff"],
+        "summary": run["summary"],
     }
 
 

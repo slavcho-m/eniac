@@ -1,4 +1,5 @@
 import type { HTMLAttributes } from "react";
+import { cn } from "@/lib/cn";
 import styles from "./Badge.module.css";
 
 export type BadgeVariant = "success" | "warning" | "error" | "info" | "neutral";
@@ -9,7 +10,7 @@ interface BadgeProps extends HTMLAttributes<HTMLSpanElement> {
 
 export function Badge({ variant, children, className, ...rest }: BadgeProps) {
   return (
-    <span className={[styles.badge, styles[variant], className].filter(Boolean).join(" ")} {...rest}>
+    <span className={cn(styles.badge, styles[variant], className)} {...rest}>
       {children}
     </span>
   );

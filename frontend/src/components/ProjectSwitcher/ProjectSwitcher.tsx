@@ -1,21 +1,30 @@
-import { ChevronDown, Folder } from "lucide-react";
+import { Folder, Settings } from "lucide-react";
 import styles from "./ProjectSwitcher.module.css";
 
 interface ProjectSwitcherProps {
   name: string;
-  onClick?: () => void;
+  onSettingsClick?: () => void;
 }
 
-export function ProjectSwitcher({ name, onClick }: ProjectSwitcherProps) {
+/** Static header — the current project's name, not a nav link (see layout/Sidebar's
+ * "View All Projects" button for that). Only the settings icon is interactive. */
+export function ProjectSwitcher({ name, onSettingsClick }: ProjectSwitcherProps) {
   return (
-    <button type="button" className={styles.switcher} onClick={onClick}>
+    <div className={styles.switcher}>
       <span className={styles.icon}>
         <Folder size={15} strokeWidth={1.75} />
       </span>
       <span className={styles.name}>{name}</span>
-      <span className={styles.chevron}>
-        <ChevronDown size={14} strokeWidth={1.75} />
-      </span>
-    </button>
+      {onSettingsClick ? (
+        <button
+          type="button"
+          className={styles.settings}
+          onClick={onSettingsClick}
+          aria-label={`${name} settings`}
+        >
+          <Settings size={14} strokeWidth={1.75} />
+        </button>
+      ) : null}
+    </div>
   );
 }

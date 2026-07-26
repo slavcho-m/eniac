@@ -8,6 +8,8 @@
   border-radius: var(--radius-card);
   cursor: pointer;
   min-width: 160px;
+  font: inherit;
+  text-align: left;
 }
 
 .selectedSuccess {

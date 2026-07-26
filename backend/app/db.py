@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     pending_questions TEXT,
     requirements_approved_at TEXT,
     tasks_approved_at TEXT,
+    error TEXT,
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS runs (
@@ -38,6 +39,8 @@ CREATE TABLE IF NOT EXISTS runs (
     status TEXT NOT NULL,
     transcript TEXT,
     diff TEXT,
+    replay_params TEXT,
+    summary TEXT,
     created_at TEXT NOT NULL,
     completed_at TEXT
 );
@@ -50,6 +53,7 @@ CREATE TABLE IF NOT EXISTS task_items (
     status TEXT NOT NULL,
     session_id TEXT,
     baseline_diff TEXT,
+    blocked_reason TEXT,
     created_at TEXT NOT NULL,
     PRIMARY KEY (task_id, item_id)
 );
@@ -86,17 +90,18 @@ def init_db() -> None:
             "pending_questions TEXT",
             "requirements_approved_at TEXT",
             "tasks_approved_at TEXT",
+            "error TEXT",
         ):
             try:
                 conn.execute(f"ALTER TABLE tasks ADD COLUMN {column}")
             except sqlite3.OperationalError:
                 pass
-        for column in ("item_id TEXT", "diff TEXT"):
+        for column in ("item_id TEXT", "diff TEXT", "replay_params TEXT", "summary TEXT"):
             try:
                 conn.execute(f"ALTER TABLE runs ADD COLUMN {column}")
             except sqlite3.OperationalError:
                 pass
-        for column in ("session_id TEXT", "baseline_diff TEXT"):
+        for column in ("session_id TEXT", "baseline_diff TEXT", "blocked_reason TEXT"):
             try:
                 conn.execute(f"ALTER TABLE task_items ADD COLUMN {column}")
             except sqlite3.OperationalError:
@@ -220,9 +225,20 @@ def set_task_tasks_ready(task_id: str, session_id: str) -> None:
         )
 
 
-def mark_task_failed(task_id: str) -> None:
+def mark_task_failed(task_id: str, reason: str) -> None:
     with connect() as conn:
-        conn.execute("UPDATE tasks SET status = 'failed' WHERE id = ?", (task_id,))
+        conn.execute(
+            "UPDATE tasks SET status = 'failed', error = ? WHERE id = ?", (reason, task_id)
+        )
+
+
+def clear_task_failure(task_id: str, status: str) -> None:
+    """Un-fails a task, restoring it to the in-flight status its stage was in — used by
+    /tasks/{id}/retry to put the task back where it was right before the failed run."""
+    with connect() as conn:
+        conn.execute(
+            "UPDATE tasks SET status = ?, error = NULL WHERE id = ?", (status, task_id)
+        )
 
 
 def confirm_task_context(task_id: str) -> str:
@@ -285,9 +301,12 @@ def get_next_pending_item(task_id: str) -> Optional[sqlite3.Row]:
 
 
 def get_awaiting_review_item(task_id: str) -> Optional[sqlite3.Row]:
+    """The item currently needing a human decision — either a finished diff to review, or
+    an Assistant-reported block needing guidance. Both resolve via the same approve/reject
+    flow (review-artifact)."""
     with connect() as conn:
         return conn.execute(
-            "SELECT * FROM task_items WHERE task_id = ? AND status = 'awaiting_review' LIMIT 1",
+            "SELECT * FROM task_items WHERE task_id = ? AND status IN ('awaiting_review', 'blocked') LIMIT 1",
             (task_id,),
         ).fetchone()
 
@@ -319,8 +338,18 @@ def set_task_item_assistant(task_id: str, item_id: str, assistant: str) -> None:
 def set_task_item_status(task_id: str, item_id: str, status: str) -> None:
     with connect() as conn:
         conn.execute(
-            "UPDATE task_items SET status = ? WHERE task_id = ? AND item_id = ?",
+            "UPDATE task_items SET status = ?, blocked_reason = NULL WHERE task_id = ? AND item_id = ?",
             (status, task_id, item_id),
+        )
+
+
+def set_task_item_blocked(task_id: str, item_id: str, reason: str) -> None:
+    """An Assistant reported it can't self-resolve — not a crash, so the item (and the
+    task) stay alive; resolved the same way a rejected review is: resume with feedback."""
+    with connect() as conn:
+        conn.execute(
+            "UPDATE task_items SET status = 'blocked', blocked_reason = ? WHERE task_id = ? AND item_id = ?",
+            (reason, task_id, item_id),
         )
 
 
@@ -362,11 +391,38 @@ def complete_run(run_id: str, status: str, transcript: str) -> None:
         )
 
 
-def set_run_diff(run_id: str, diff: str) -> None:
+def set_run_diff(run_id: str, diff: str, summary: Optional[str] = None) -> None:
     with connect() as conn:
-        conn.execute("UPDATE runs SET diff = ? WHERE id = ?", (diff, run_id))
+        conn.execute(
+            "UPDATE runs SET diff = ?, summary = ? WHERE id = ?", (diff, summary, run_id)
+        )
+
+
+def set_run_replay_params(run_id: str, replay_params_json: str) -> None:
+    """Stores exactly the kwargs `start_run` was invoked with, so a failed run can be
+    replayed verbatim by /tasks/{id}/retry without each caller re-deriving them."""
+    with connect() as conn:
+        conn.execute(
+            "UPDATE runs SET replay_params = ? WHERE id = ?", (replay_params_json, run_id)
+        )
 
 
 def get_run(run_id: str) -> Optional[sqlite3.Row]:
     with connect() as conn:
         return conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+
+
+def get_latest_run_for_item(task_id: str, item_id: str) -> Optional[sqlite3.Row]:
+    with connect() as conn:
+        return conn.execute(
+            "SELECT * FROM runs WHERE task_id = ? AND item_id = ? ORDER BY created_at DESC LIMIT 1",
+            (task_id, item_id),
+        ).fetchone()
+
+
+def get_latest_run_for_task(task_id: str) -> Optional[sqlite3.Row]:
+    with connect() as conn:
+        return conn.execute(
+            "SELECT * FROM runs WHERE task_id = ? ORDER BY created_at DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()

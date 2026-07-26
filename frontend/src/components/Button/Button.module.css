@@ -46,7 +46,38 @@
   padding-right: 8px;
 }
 
+.link {
+  background: transparent;
+  color: var(--text-secondary);
+  border-color: transparent;
+  font-size: var(--text-body);
+  font-weight: var(--weight-body);
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
 .icon {
   display: inline-flex;
   align-items: center;
+}
+
+.label {
+  position: relative;
+}
+
+/* Underline grows outward from the text's own center, not the button's edges. */
+.link .label::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  right: 50%;
+  bottom: -3px;
+  height: 1px;
+  background: currentColor;
+  transition: left 0.18s ease, right 0.18s ease;
+}
+
+.link:not(:disabled):hover .label::after {
+  left: 0;
+  right: 0;
 }

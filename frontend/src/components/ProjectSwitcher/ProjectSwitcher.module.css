@@ -3,11 +3,10 @@
   align-items: center;
   gap: 8px;
   width: 100%;
-  padding: 10px 12px;
+  padding: 8px 4px 8px 12px;
   background: var(--bg-panel);
   border: 1px solid var(--border-hairline);
   border-radius: var(--radius-card);
-  cursor: pointer;
   color: var(--text-primary);
 }
 
@@ -20,7 +19,6 @@
 .name {
   flex: 1;
   min-width: 0;
-  text-align: left;
   font-size: var(--text-label);
   font-weight: var(--weight-label);
   overflow: hidden;
@@ -28,8 +26,22 @@
   white-space: nowrap;
 }
 
-.chevron {
-  display: inline-flex;
-  color: var(--text-tertiary);
+.settings {
   flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: none;
+  border-radius: var(--radius-card);
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+
+.settings:hover {
+  color: var(--text-primary);
+  background: var(--neutral-bg);
 }

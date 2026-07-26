@@ -1,11 +1,9 @@
 .item {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  border-radius: var(--radius-card);
+  width: 100%;
   border-left: 2px solid transparent;
-  cursor: pointer;
+  border-radius: var(--radius-card);
   color: var(--text-secondary);
 }
 
@@ -17,6 +15,21 @@
   background: var(--warning-bg);
   border-left-color: var(--warning);
   color: var(--text-primary);
+}
+
+.main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  text-align: left;
 }
 
 .icon {
@@ -39,4 +52,25 @@
   flex-shrink: 0;
   font-size: var(--text-hint);
   color: var(--text-tertiary);
+}
+
+.delete {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin-right: 6px;
+  border: none;
+  background: none;
+  border-radius: var(--radius-card);
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+
+.delete:hover {
+  color: var(--error);
+  background: var(--error-bg);
 }

@@ -25,8 +25,28 @@
 
 .icon {
   display: inline-flex;
+  align-items: center;
   color: var(--success);
   flex-shrink: 0;
+}
+
+.pulseDot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--warning);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.8);
+  }
 }
 
 .title {
@@ -34,6 +54,31 @@
   font-size: var(--text-label);
   font-weight: var(--weight-label);
   color: var(--text-primary);
+}
+
+.waveChar {
+  display: inline-block;
+  /* Only ever animates a handful of short, static strings ("Working…" etc.) — a few
+   * dozen spans with a compositor-only (transform) animation is negligible cost. */
+  animation: wave 1.4s ease-in-out infinite;
+  animation-delay: calc(var(--char-index) * 0.045s);
+  white-space: pre;
+}
+
+@keyframes wave {
+  0%, 60%, 100% {
+    transform: translateY(0);
+  }
+  30% {
+    transform: translateY(-3px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pulseDot,
+  .waveChar {
+    animation: none;
+  }
 }
 
 .timestamp {

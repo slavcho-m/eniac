@@ -1,0 +1,53 @@
+.wrapper {
+  position: relative;
+  width: 100%;
+}
+
+.textarea {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-card);
+  padding: 12px 52px 44px 14px;
+  font-family: inherit;
+  font-size: var(--text-body);
+  color: var(--text-primary);
+  outline: none;
+}
+
+.textarea:focus {
+  border-color: var(--info-border);
+}
+
+.textarea::placeholder {
+  color: var(--text-tertiary);
+}
+
+.submit {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background: var(--btn-primary-bg);
+  color: var(--btn-primary-text);
+  cursor: pointer;
+  transition: opacity 0.12s ease;
+}
+
+.submit:disabled {
+  cursor: not-allowed;
+  opacity: 0.35;
+}
+
+.submit:not(:disabled):hover {
+  opacity: 0.9;
+}

@@ -1,3 +1,4 @@
+import { cn } from "@/lib/cn";
 import { Badge } from "../Badge/Badge";
 import styles from "./DiffSummaryChip.module.css";
 
@@ -20,10 +21,18 @@ interface DiffSummaryChipProps {
   onClick?: () => void;
 }
 
-export function DiffSummaryChip({ kind, filename, added, removed, selected = false, onClick }: DiffSummaryChipProps) {
+export function DiffSummaryChip({
+  kind,
+  filename,
+  added,
+  removed,
+  selected = false,
+  onClick,
+}: DiffSummaryChipProps) {
   return (
-    <div
-      className={[styles.chip, selected ? SELECTED_CLASS_BY_KIND[kind] : ""].filter(Boolean).join(" ")}
+    <button
+      type="button"
+      className={cn(styles.chip, selected && SELECTED_CLASS_BY_KIND[kind])}
       onClick={onClick}
     >
       <div className={styles.top}>
@@ -33,6 +42,6 @@ export function DiffSummaryChip({ kind, filename, added, removed, selected = fal
         </span>
       </div>
       <span className={styles.filename}>{filename}</span>
-    </div>
+    </button>
   );
 }

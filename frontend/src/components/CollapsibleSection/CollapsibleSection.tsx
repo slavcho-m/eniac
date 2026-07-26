@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { ChevronDown } from "lucide-react";
+import { cn } from "@/lib/cn";
 import styles from "./CollapsibleSection.module.css";
 
 interface CollapsibleSectionProps {
@@ -15,11 +16,11 @@ export function CollapsibleSection({ title, defaultOpen = false, children }: Col
     <div className={styles.wrapper}>
       <button type="button" className={styles.trigger} onClick={() => setOpen((v) => !v)}>
         {title}
-        <span className={[styles.chevron, open ? styles.chevronOpen : ""].filter(Boolean).join(" ")}>
+        <span className={cn(styles.chevron, open && styles.chevronOpen)}>
           <ChevronDown size={14} strokeWidth={1.75} />
         </span>
       </button>
-      {open && <div className={styles.content}>{children}</div>}
+      {open ? <div className={styles.content}>{children}</div> : null}
     </div>
   );
 }

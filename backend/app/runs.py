@@ -52,6 +52,14 @@ _queues: Dict[str, "asyncio.Queue[str]"] = {}
 _DONE = object()  # sentinel: signals stream_run to stop
 
 
+def register_run(run_id: str) -> None:
+    """Synchronously creates this run's message queue before the HTTP response handing
+    `run_id` to the client goes out — closes a race where the client's WebSocket could
+    connect and find no queue yet, since `start_run` is scheduled via `create_task` and
+    isn't guaranteed to have run any of its own code by the time the client reconnects."""
+    _queues[run_id] = asyncio.Queue()
+
+
 def slugify(text: str, max_len: int = 40) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
     return slug[:max_len].strip("-") or "task"
@@ -59,6 +67,36 @@ def slugify(text: str, max_len: int = 40) -> str:
 
 def new_run_id(stage: str, prompt: str) -> str:
     return f"{stage}-{slugify(prompt)}-{uuid.uuid4().hex[:8]}"
+
+
+def _process_failure_reason(returncode: Optional[int], transcript: str) -> str:
+    tail = transcript.strip()[-2000:] or "(no output)"
+    return f"claude exited with code {returncode}:\n{tail}"
+
+
+def _working_tree_diff(cwd: Path) -> str:
+    """`git diff` alone omits untracked files entirely, so an Assistant creating a brand
+    new file (not just editing existing ones) showed up as an empty diff — real bug found
+    live against a real repo. Appends each untracked file (respecting .gitignore) as a
+    `--no-index` add-diff, which produces the same `diff --git`/`new file mode` header
+    shape as a tracked addition, so the frontend's parseDiff needs no changes."""
+    tracked = subprocess.run(
+        ["git", "-C", str(cwd), "diff"], capture_output=True, text=True
+    ).stdout
+    untracked_files = subprocess.run(
+        ["git", "-C", str(cwd), "ls-files", "--others", "--exclude-standard"],
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    untracked_diffs = [
+        subprocess.run(
+            ["git", "-C", str(cwd), "diff", "--no-index", "/dev/null", path],
+            capture_output=True,
+            text=True,
+        ).stdout
+        for path in untracked_files
+    ]
+    return tracked + "".join(untracked_diffs)
 
 
 def _strip_fences(text: str) -> str:
@@ -261,8 +299,24 @@ async def start_run(
     session_id for clarification-round resumption via `-r`. Trade-off accepted: no live
     token-by-token streaming for this stage specifically.
     """
-    queue: "asyncio.Queue[str]" = asyncio.Queue()
-    _queues[run_id] = queue
+    # register_run (called synchronously by the endpoint before this task was scheduled)
+    # already created the queue in the normal case; setdefault covers any caller that
+    # skipped it rather than depending on registration having happened.
+    queue = _queues.setdefault(run_id, asyncio.Queue())
+
+    # So a failed run can be replayed verbatim by /tasks/{id}/retry.
+    db.set_run_replay_params(
+        run_id,
+        json.dumps(
+            {
+                "prompt": prompt,
+                "resume_session_id": resume_session_id,
+                "mastermind": mastermind,
+                "workspace_path": workspace_path,
+                "assistant": assistant,
+            }
+        ),
+    )
 
     # Supervisor must not investigate code (agents/supervisor/prompt.md) — enforced via
     # --tools "" rather than prompt text alone. Masterminds investigate read-only.
@@ -351,12 +405,12 @@ async def start_run(
                     )
                 else:
                     _write_context(project_id, task_id, session_id, data)
-            except Exception:
+            except Exception as exc:
                 # Untrusted LLM output at a trust boundary: any parse/validation/IO
                 # failure here must not leave the task stuck in "running" forever.
-                db.mark_task_failed(task_id)
+                db.mark_task_failed(task_id, f"Failed to process agent response: {exc}")
         else:
-            db.mark_task_failed(task_id)
+            db.mark_task_failed(task_id, _process_failure_reason(process.returncode, transcript))
 
     elif stage == "requirements":
         if status == "completed":
@@ -379,10 +433,10 @@ async def start_run(
                     _write_requirements(
                         project_id, task_id, mastermind, task["feature_slug"], session_id, data
                     )
-            except Exception:
-                db.mark_task_failed(task_id)
+            except Exception as exc:
+                db.mark_task_failed(task_id, f"Failed to process agent response: {exc}")
         else:
-            db.mark_task_failed(task_id)
+            db.mark_task_failed(task_id, _process_failure_reason(process.returncode, transcript))
 
     elif stage == "tasks":
         if status == "completed":
@@ -405,10 +459,10 @@ async def start_run(
                     _write_tasks(
                         project_id, task_id, mastermind, task["feature_slug"], session_id, data
                     )
-            except Exception:
-                db.mark_task_failed(task_id)
+            except Exception as exc:
+                db.mark_task_failed(task_id, f"Failed to process agent response: {exc}")
         else:
-            db.mark_task_failed(task_id)
+            db.mark_task_failed(task_id, _process_failure_reason(process.returncode, transcript))
 
     elif stage == "execution":
         assert item_id is not None
@@ -422,21 +476,20 @@ async def start_run(
                 data = _parse_assistant_json(result_text)
                 db.set_task_item_session(task_id, item_id, session_id)
 
-                diff_result = subprocess.run(
-                    ["git", "-C", str(cwd), "diff"], capture_output=True, text=True
-                )
-                db.set_run_diff(run_id, diff_result.stdout)
+                assert cwd is not None
+                db.set_run_diff(run_id, _working_tree_diff(cwd), summary=data.get("summary"))
 
                 if data["status"] == "done":
                     db.set_task_item_status(task_id, item_id, "awaiting_review")
                 else:
-                    # "blocked" — an Assistant can't self-resolve this; surface it as a
-                    # failed task rather than leaving the item stuck in "in_progress".
-                    db.mark_task_failed(task_id)
-            except Exception:
-                db.mark_task_failed(task_id)
+                    # "blocked" — the Assistant is asking for guidance, not crashing.
+                    # Only this item stops; the task and its other items stay alive,
+                    # resolved the same way a rejected review is (resume + feedback).
+                    db.set_task_item_blocked(task_id, item_id, data["reason"])
+            except Exception as exc:
+                db.mark_task_failed(task_id, f"Failed to process agent response: {exc}")
         else:
-            db.mark_task_failed(task_id)
+            db.mark_task_failed(task_id, _process_failure_reason(process.returncode, transcript))
 
     await queue.put(_DONE)  # type: ignore[arg-type]
 
