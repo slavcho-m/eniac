@@ -1,17 +1,19 @@
 .banner {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 10px;
   padding: 10px 18px;
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-card);
   border: 1px solid transparent;
   font-size: var(--text-label);
   font-weight: var(--weight-label);
+  line-height: 1.5;
 }
 
 .dot {
   width: 6px;
   height: 6px;
+  margin-top: 7px;
   border-radius: 50%;
   flex-shrink: 0;
 }

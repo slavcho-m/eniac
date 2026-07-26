@@ -102,3 +102,28 @@ about restricting what gets read during investigation; (3) whether that
 child-repo scoping is auto-detected (e.g. from which nested `.git` the
 Assistant's edited files fall under) or explicitly declared somewhere in
 `context.md`/`requirements.md` by the Mastermind/Supervisor.
+
+## No Override Assistant picker
+
+**Found:** 2026-07-25, building phase 4 (task-detail page)'s execution view.
+
+**What's missing:** `POST /tasks/{id}/approve-assistant` has accepted an
+optional `{"assistant": "..."}` override since the backend's Assistant
+override work landed — validated against
+`backend/app/runs.py`'s `MASTERMIND_ASSISTANTS[mastermind]`, persisted back
+to `task_items.assistant` via `db.set_task_item_assistant` so the record
+reflects what actually ran. The frontend has no UI for it at all —
+`ExecutionView` always runs the Mastermind-recommended Assistant with no way
+to pick a different one before running it.
+
+**Current workaround:** none needed day-to-day — the recommended Assistant
+is normally the right one — but there's no way to override it from the UI
+when it isn't.
+
+**Fix, when it's time:** needs a dropdown/select pattern the component
+library doesn't have yet (every other choice in the app so far has been a
+fixed set of buttons or a text field, not an open list to pick one of N
+from). Deliberately deprioritized behind building out the frontend/devops/
+architect Masterminds' Assistants — a picker for choosing between Assistants
+matters a lot less while only one Mastermind (backend) has more than one
+Assistant configured to actually pick between.

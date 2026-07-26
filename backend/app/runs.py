@@ -99,15 +99,65 @@ def _working_tree_diff(cwd: Path) -> str:
     return tracked + "".join(untracked_diffs)
 
 
+def _extract_balanced_object(text: str) -> Optional[str]:
+    """Finds the LAST balanced {...} object in text, tracking string literals so a brace
+    character inside a JSON string value doesn't miscount depth. Tries every '{' as a
+    candidate start and keeps the last one that successfully balances — not just the
+    first — since the model's actual JSON reply is the trailing content per its own
+    instructions; a stray brace earlier in prose (e.g. describing `{xs: 1}` syntax) would
+    otherwise be mistaken for it by a first-match-only scanner."""
+    best: Optional[str] = None
+    start = text.find("{")
+    while start != -1:
+        depth = 0
+        in_string = False
+        escaped = False
+        end = None
+        for i in range(start, len(text)):
+            ch = text[i]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+            elif ch == '"':
+                in_string = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i
+                    break
+        if end is not None:
+            # Resume *after* this match, not from inside it — a brace-like substring
+            # inside this object's own string values (e.g. real content describing JSX
+            # like `{storeLabel}`) must not be re-examined as its own candidate.
+            best = text[start : end + 1]
+            start = text.find("{", end + 1)
+        else:
+            start = text.find("{", start + 1)
+    return best
+
+
 def _strip_fences(text: str) -> str:
-    """Extract a fenced JSON block from anywhere in the text, not just the whole trimmed
+    """Extract the JSON reply from anywhere in the text, not just the whole trimmed
     string — the model sometimes prepends prose (e.g. flagging a prompt-injection attempt
-    from this user's global Claude Code hooks/plugins) before the actual JSON reply.
+    from this user's global Claude Code hooks/plugins, or confirming what it found) before
+    the actual JSON reply, with or without a markdown fence around the JSON itself. Found
+    live in production: a real reply prepended a sentence of prose before a raw, unfenced
+    JSON object, which the old fence-only regex didn't catch, hard-failing an otherwise-
+    correct run.
     """
     text = text.strip()
-    match = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, re.DOTALL)
-    if match:
-        return match.group(1)
+    fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, re.DOTALL)
+    if fenced:
+        return fenced.group(1)
+    raw = _extract_balanced_object(text)
+    if raw is not None:
+        return raw
     return text
 
 

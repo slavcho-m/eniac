@@ -30,7 +30,7 @@ interface ExecutionViewProps {
 export function ExecutionView({ task, items, onRefetch, onRunStarted }: ExecutionViewProps) {
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [feedback, setFeedback] = useState("");
-  const [rejecting, setRejecting] = useState(false);
+  const [showFeedbackForm, setShowFeedbackForm] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -76,7 +76,7 @@ export function ExecutionView({ task, items, onRefetch, onRunStarted }: Executio
     try {
       const result = await reviewArtifact(task.id, false, trimmed);
       setFeedback("");
-      setRejecting(false);
+      setShowFeedbackForm(false);
       setSelectedFile(null);
       if (result.run_id) {
         onRunStarted(result.run_id);
@@ -178,7 +178,7 @@ export function ExecutionView({ task, items, onRefetch, onRunStarted }: Executio
 
       {actionable ? (
         <div style={{ flexShrink: 0, borderTop: "1px solid var(--border-hairline)", marginTop: 16, paddingTop: 16 }}>
-          {rejecting || blocked ? (
+          {showFeedbackForm ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               <PromptInput
                 placeholder={
@@ -191,21 +191,23 @@ export function ExecutionView({ task, items, onRefetch, onRunStarted }: Executio
                 onSubmit={handleReject}
                 disabled={submitting}
               />
-              {blocked ? null : (
-                <div>
-                  <Button variant="secondary" onClick={() => setRejecting(false)} disabled={submitting}>
-                    Cancel
-                  </Button>
-                </div>
-              )}
+              <div>
+                <Button variant="secondary" onClick={() => setShowFeedbackForm(false)} disabled={submitting}>
+                  Cancel
+                </Button>
+              </div>
             </div>
           ) : (
             <div style={{ display: "flex", gap: 12 }}>
               <Button variant="primary" onClick={handleApprove} disabled={submitting}>
-                Approve &amp; Apply Changes
+                {blocked ? "Mark as Done" : "Approve & Apply Changes"}
               </Button>
-              <Button variant="destructive" onClick={() => setRejecting(true)} disabled={submitting}>
-                Reject
+              <Button
+                variant={blocked ? "secondary" : "destructive"}
+                onClick={() => setShowFeedbackForm(true)}
+                disabled={submitting}
+              >
+                {blocked ? "Send Guidance" : "Reject"}
               </Button>
             </div>
           )}
