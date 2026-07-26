@@ -5,6 +5,7 @@ import { Button, ConfirmDialog, NavListItem, ProjectSwitcher, SectionLabel } fro
 import { useProjects } from "@/hooks/useProjects";
 import { useProjectTasks } from "@/hooks/useProjectTasks";
 import { deleteTask } from "@/lib/api";
+import type { TaskStatus } from "@/types/api";
 import { DeleteProjectDialog } from "./DeleteProjectDialog";
 import { ProjectSettingsDialog } from "./ProjectSettingsDialog";
 
@@ -13,6 +14,20 @@ interface SidebarProps {
    * so an in-place status change elsewhere on the page updates this list too. */
   refreshKey?: unknown;
 }
+
+const TASK_STATUS_LABEL: Record<TaskStatus, string> = {
+  running: "Running",
+  awaiting_clarification: "Awaiting Clarification",
+  context_ready: "Context Ready",
+  investigating: "Investigating",
+  awaiting_requirements_clarification: "Awaiting Requirements",
+  requirements_ready: "Requirements Ready",
+  planning_tasks: "Planning Tasks",
+  awaiting_tasks_clarification: "Awaiting Tasks",
+  tasks_ready: "Tasks Ready",
+  completed: "Completed",
+  failed: "Failed",
+};
 
 export function Sidebar({ refreshKey }: SidebarProps) {
   const { projectId, taskId } = useParams<{ projectId?: string; taskId?: string }>();
@@ -101,7 +116,7 @@ export function Sidebar({ refreshKey }: SidebarProps) {
                 key={task.id}
                 icon={<CheckSquare size={15} strokeWidth={1.75} />}
                 label={task.feature_slug ?? task.prompt}
-                meta={task.status}
+                meta={TASK_STATUS_LABEL[task.status]}
                 active={task.id === taskId}
                 onClick={() => navigate(`/projects/${projectId}/tasks/${task.id}`)}
                 onDelete={() =>

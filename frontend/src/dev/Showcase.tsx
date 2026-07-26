@@ -65,7 +65,7 @@ function RightFiles() {
       </div>
 
       <div style={{ marginTop: 20 }}>
-        <MarkdownPreviewCard filename="requirements.md" status="Ready for review" onEdit={() => {}}>
+        <MarkdownPreviewCard filename="requirements.md" onEdit={() => {}}>
           <h2>Webhook endpoint</h2>
           <ul>
             <li>

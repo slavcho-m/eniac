@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Badge, Button, DiffSummaryChip, DiffViewer, SectionLabel, StatusBanner, Textarea } from "@/components";
+import { Badge, Button, DiffSummaryChip, DiffViewer, PromptInput, SectionLabel, StatusBanner } from "@/components";
 import type { BadgeVariant } from "@/components";
 import { approveAssistant, reviewArtifact } from "@/lib/api";
 import { parseDiff } from "@/lib/parseDiff";
@@ -179,26 +179,25 @@ export function ExecutionView({ task, items, onRefetch, onRunStarted }: Executio
       {actionable ? (
         <div style={{ flexShrink: 0, borderTop: "1px solid var(--border-hairline)", marginTop: 16, paddingTop: 16 }}>
           {rejecting || blocked ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              <Textarea
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <PromptInput
                 placeholder={
                   blocked
                     ? "Tell the Assistant how to proceed…"
                     : "Describe what needs fixing before this goes back to the Assistant…"
                 }
                 value={feedback}
-                onChange={(e) => setFeedback(e.target.value)}
+                onChange={setFeedback}
+                onSubmit={handleReject}
+                disabled={submitting}
               />
-              <div style={{ display: "flex", gap: 12 }}>
-                <Button variant="primary" onClick={handleReject} disabled={!feedback.trim() || submitting}>
-                  {blocked ? "Send Guidance" : "Send Feedback"}
-                </Button>
-                {blocked ? null : (
+              {blocked ? null : (
+                <div>
                   <Button variant="secondary" onClick={() => setRejecting(false)} disabled={submitting}>
                     Cancel
                   </Button>
-                )}
-              </div>
+                </div>
+              )}
             </div>
           ) : (
             <div style={{ display: "flex", gap: 12 }}>

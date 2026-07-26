@@ -1,7 +1,7 @@
 .textarea {
   display: block;
   width: 100%;
-  resize: vertical;
+  resize: none;
   background: var(--bg-panel);
   border: 1px solid var(--border-hairline);
   border-radius: var(--radius-card);

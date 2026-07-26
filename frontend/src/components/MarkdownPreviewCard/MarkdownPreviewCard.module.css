@@ -11,21 +11,22 @@
 }
 
 .filename {
+  flex: 1;
+  min-width: 0;
   font-size: var(--text-body);
   font-weight: var(--weight-label);
   color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.status {
-  font-size: var(--text-hint);
-  color: var(--text-secondary);
-  flex: 1;
-}
-
+.viewLink,
 .editLink {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  flex-shrink: 0;
   background: none;
   border: none;
   color: var(--text-secondary);
@@ -34,6 +35,7 @@
   padding: 0;
 }
 
+.viewLink:hover,
 .editLink:hover {
   color: var(--text-primary);
 }
@@ -47,6 +49,15 @@
   font-size: var(--text-body);
   color: var(--text-secondary);
   line-height: 1.6;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+.bare {
+  margin-top: 0;
+  padding: 0;
+  background: none;
+  border: none;
 }
 
 .body :global(h1),
@@ -73,6 +84,8 @@
   border-radius: 3px;
   padding: 1px 5px;
   font-size: 0.95em;
+  overflow-wrap: break-word;
+  word-break: break-word;
 }
 
 .body :global(strong) {

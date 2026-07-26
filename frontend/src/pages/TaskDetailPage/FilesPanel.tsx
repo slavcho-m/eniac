@@ -16,12 +16,16 @@ interface FilesPanelProps {
 }
 
 export function FilesPanel({ files }: FilesPanelProps) {
-  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  // undefined: no manual selection yet, fall back to the smart default below.
+  // null: user explicitly deselected — show nothing, don't fall back.
+  // string: that file, explicitly picked.
+  const [selectedPath, setSelectedPath] = useState<string | null | undefined>(undefined);
 
   const activeFile: TaskFile | undefined =
-    files?.find((file) => file.path === selectedPath) ??
-    files?.find((file) => file.status === "awaiting_approval") ??
-    files?.find((file) => file.status === "approved");
+    selectedPath === undefined
+      ? files?.find((file) => file.status === "awaiting_approval") ??
+        files?.find((file) => file.status === "approved")
+      : files?.find((file) => file.path === selectedPath);
 
   const previewable = activeFile && activeFile.status !== "draft";
   const { data: content } = useFileContent(previewable ? activeFile.path : undefined);
@@ -37,17 +41,14 @@ export function FilesPanel({ files }: FilesPanelProps) {
             meta={file.modified_at ? new Date(file.modified_at).toLocaleString() : "-"}
             badge={BADGE_BY_STATUS[file.status]}
             active={file.path === activeFile?.path}
-            onClick={() => setSelectedPath(file.path)}
+            onClick={() => setSelectedPath((prev) => (prev === file.path ? null : file.path))}
           />
         ))}
       </div>
 
       {previewable ? (
         <div style={{ marginTop: 20 }}>
-          <MarkdownPreviewCard
-            filename={activeFile.name}
-            status={activeFile.status === "approved" ? "Approved" : "Ready for review"}
-          >
+          <MarkdownPreviewCard filename={activeFile.name}>
             {content ? renderMarkdown(content) : "Loading…"}
           </MarkdownPreviewCard>
         </div>

@@ -27,5 +27,6 @@
   background: var(--bg-panel);
   border-left: 1px solid var(--border-hairline);
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 20px 24px;
 }
