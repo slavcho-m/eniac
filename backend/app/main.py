@@ -70,6 +70,31 @@ class WriteFileBody(BaseModel):
     content: str
 
 
+class BashApprovalCreateBody(BaseModel):
+    run_id: Optional[str] = None
+    task_id: Optional[str] = None
+    command: str
+    cwd: Optional[str] = None
+
+
+class BashApprovalDecideBody(BaseModel):
+    decision: str
+    allowlist_pattern: Optional[str] = None
+    feedback: Optional[str] = None
+
+
+class BashAllowlistCreateBody(BaseModel):
+    pattern: str
+
+
+class RejectAmendmentBody(BaseModel):
+    feedback: str
+
+
+class ConsultMastermindBody(BaseModel):
+    message: str
+
+
 @app.on_event("startup")
 def on_startup() -> None:
     db.init_db()
@@ -211,6 +236,7 @@ def _serialize_task(task) -> dict:
             json.loads(task["pending_questions"]) if task["pending_questions"] else None
         ),
         "error": task["error"],
+        "has_pending_amendment": task["pending_amendment"] is not None,
     }
 
 
@@ -332,6 +358,7 @@ IN_FLIGHT_STATUS_BY_STAGE = {
     "requirements": "investigating",
     "tasks": "planning_tasks",
     "execution": "tasks_ready",
+    "consultation": "tasks_ready",
 }
 
 
@@ -635,6 +662,193 @@ async def review_artifact(task_id: str, body: ReviewArtifactBody):
     return {"task_id": task_id, "item_id": item["item_id"], "status": "in_progress", "run_id": run_id}
 
 
+def _tasks_md_path(task, first_mastermind: str) -> Path:
+    return db.PPM_ROOT / task["project_id"] / first_mastermind / "features" / task["feature_slug"] / "tasks.md"
+
+
+def _amendment_render_items(task_id: str, amendment: dict) -> list:
+    """The existing task list plus the amendment's proposed new items, in the same shape
+    `runs.render_tasks_md` expects — used both to preview the diff (GET .../amendment)
+    and, on approval, to write the real amended tasks.md."""
+    deprecate_ids = set(amendment.get("deprecate_item_ids", []))
+    reasoning = amendment.get("reasoning")
+    items = []
+    existing = db.get_task_items(task_id)
+    for item in existing:
+        # Checks the item's actual DB status too, not just the (possibly not-yet-applied)
+        # amendment's proposed ids — so this same helper renders correctly both as a
+        # pre-approval preview (nothing deprecated in the DB yet) and as the final
+        # post-approval write (deprecation already applied, amendment passed in empty).
+        is_deprecated = item["status"] == "deprecated" or item["item_id"] in deprecate_ids
+        items.append(
+            {
+                "item_id": item["item_id"],
+                "slug": item["slug"],
+                "description": item["description"],
+                "assistant": item["assistant"],
+                "depends_on": json.loads(item["depends_on"]) if item["depends_on"] else [],
+                "deprecated": is_deprecated,
+                "deprecated_reason": item["deprecated_reason"] or (reasoning if is_deprecated else None),
+            }
+        )
+    next_n = len(existing) + 1
+    for offset, new_item in enumerate(amendment.get("new_tasks", [])):
+        items.append({**new_item, "item_id": f"task{next_n + offset}"})
+    return items
+
+
+@app.get("/tasks/{task_id}/amendment")
+def get_amendment(task_id: str):
+    task = db.get_task(task_id)
+    if task is None:
+        raise HTTPException(404, f"task '{task_id}' not found")
+    amendment = db.get_pending_amendment(task_id)
+    if amendment is None:
+        raise HTTPException(404, "no pending amendment for this task")
+
+    # A consultation can come back needing more info instead of a proposal — same storage
+    # slot, no diff to compute, the frontend shows a question instead of a diff.
+    if amendment.get("kind") == "clarification":
+        return {"task_id": task_id, **amendment}
+
+    masterminds = json.loads(task["masterminds"])
+    tasks_path = _tasks_md_path(task, masterminds[0])
+    current_md = tasks_path.read_text() if tasks_path.exists() else ""
+    proposed_md = runs.render_tasks_md(_amendment_render_items(task_id, amendment))
+    diff = runs.text_diff(current_md, proposed_md, "tasks.md")
+
+    return {"task_id": task_id, "diff": diff, **amendment}
+
+
+@app.post("/tasks/{task_id}/approve-amendment")
+def approve_amendment(task_id: str):
+    task = db.get_task(task_id)
+    if task is None:
+        raise HTTPException(404, f"task '{task_id}' not found")
+    amendment = db.get_pending_amendment(task_id)
+    if amendment is None:
+        raise HTTPException(409, "no pending amendment for this task")
+    if amendment.get("kind") == "clarification":
+        raise HTTPException(409, "this is a clarification question, not a proposal — answer it via reject-amendment")
+
+    masterminds = json.loads(task["masterminds"])
+    tasks_path = _tasks_md_path(task, masterminds[0])
+
+    deprecate_ids = amendment.get("deprecate_item_ids", [])
+    reasoning = amendment.get("reasoning") or "Superseded by an approved amendment."
+    for item_id in deprecate_ids:
+        db.set_task_item_deprecated(task_id, item_id, reasoning)
+
+    new_item_ids = db.append_task_items(task_id, amendment.get("new_tasks", []))
+    # Re-render from the now-updated DB state (deprecation + new items already applied
+    # above) — pass an empty amendment since _amendment_render_items falls back to each
+    # item's actual status, not the (now-stale) proposal.
+    tasks_path.write_text(runs.render_tasks_md(_amendment_render_items(task_id, {})))
+    db.clear_pending_amendment(task_id)
+
+    # A task already sitting at 'completed' can gain real new pending work here — route
+    # back through ExecutionView instead of leaving it stuck on a now-stale "all done".
+    if new_item_ids and task["status"] == "completed":
+        db.reopen_task_for_execution(task_id)
+
+    return {"task_id": task_id, "new_item_ids": new_item_ids, "deprecated_item_ids": deprecate_ids}
+
+
+@app.post("/tasks/{task_id}/reject-amendment")
+async def reject_amendment(task_id: str, body: RejectAmendmentBody):
+    task = db.get_task(task_id)
+    if task is None:
+        raise HTTPException(404, f"task '{task_id}' not found")
+    amendment = db.get_pending_amendment(task_id)
+    if amendment is None:
+        raise HTTPException(409, "no pending amendment for this task")
+    if not body.feedback:
+        raise HTTPException(400, "feedback is required when rejecting")
+
+    db.clear_pending_amendment(task_id)
+
+    masterminds = json.loads(task["masterminds"])
+    first_mastermind = masterminds[0]
+    project = db.get_project(task["project_id"])
+    workspace_path = project["workspace_path"]
+
+    if amendment["source"] == "review":
+        item_id = amendment["origin_item_id"]
+        item = db.get_task_item(task_id, item_id)
+        db.set_task_item_status(task_id, item_id, "in_progress")
+        run_id = runs.new_run_id("execution", f"{task['feature_slug']}-{item_id}-amendment")
+        db.insert_run(run_id, task_id, "execution", item_id=item_id)
+        _fire_and_forget(
+            run_id,
+            runs.start_run(
+                run_id,
+                task_id,
+                task["project_id"],
+                body.feedback,
+                "execution",
+                resume_session_id=amendment["resume_session_id"],
+                mastermind=first_mastermind,
+                assistant=item["assistant"],
+                workspace_path=workspace_path,
+                item_id=item_id,
+            ),
+        )
+    else:
+        run_id = runs.new_run_id("consultation", task["feature_slug"])
+        db.insert_run(run_id, task_id, "consultation")
+        _fire_and_forget(
+            run_id,
+            runs.start_run(
+                run_id,
+                task_id,
+                task["project_id"],
+                body.feedback,
+                "consultation",
+                resume_session_id=amendment["resume_session_id"],
+                mastermind=first_mastermind,
+                workspace_path=workspace_path,
+            ),
+        )
+
+    return {"task_id": task_id, "run_id": run_id}
+
+
+@app.post("/tasks/{task_id}/consult-mastermind")
+async def consult_mastermind(task_id: str, body: ConsultMastermindBody):
+    task = db.get_task(task_id)
+    if task is None:
+        raise HTTPException(404, f"task '{task_id}' not found")
+    if task["tasks_approved_at"] is None:
+        raise HTTPException(409, "tasks not approved yet")
+    if not body.message:
+        raise HTTPException(400, "message is required")
+
+    masterminds = json.loads(task["masterminds"])
+    first_mastermind = masterminds[0]
+    project = db.get_project(task["project_id"])
+    workspace_path = project["workspace_path"]
+    if not workspace_path or not Path(workspace_path).expanduser().is_dir():
+        raise HTTPException(409, "workspace_path is missing or no longer exists")
+
+    run_id = runs.new_run_id("consultation", body.message)
+    db.insert_run(run_id, task_id, "consultation")
+    _fire_and_forget(
+        run_id,
+        runs.start_run(
+            run_id,
+            task_id,
+            task["project_id"],
+            body.message,
+            "consultation",
+            resume_session_id=task["session_id"],
+            mastermind=first_mastermind,
+            workspace_path=workspace_path,
+        ),
+    )
+
+    return {"task_id": task_id, "run_id": run_id}
+
+
 def _serialize_task_item(item, task_id: str) -> dict:
     latest_run = db.get_latest_run_for_item(task_id, item["item_id"])
     return {
@@ -644,6 +858,8 @@ def _serialize_task_item(item, task_id: str) -> dict:
         "assistant": item["assistant"],
         "status": item["status"],
         "blocked_reason": item["blocked_reason"],
+        "deprecated_reason": item["deprecated_reason"],
+        "depends_on": json.loads(item["depends_on"]) if item["depends_on"] else [],
         "latest_run": (
             {
                 "id": latest_run["id"],
@@ -685,6 +901,88 @@ def get_task_diff(task_id: str):
 
     diff = runs.working_tree_diff(Path(workspace_path).expanduser(), since=baseline_commit)
     return {"diff": diff}
+
+
+def _serialize_bash_approval(row) -> dict:
+    return {
+        "id": row["id"],
+        "run_id": row["run_id"],
+        "task_id": row["task_id"],
+        "command": row["command"],
+        "cwd": row["cwd"],
+        "status": row["status"],
+        "created_at": row["created_at"],
+        "decided_at": row["decided_at"],
+        "feedback": row["feedback"],
+    }
+
+
+@app.post("/bash-approvals")
+def create_bash_approval(body: BashApprovalCreateBody):
+    """Called by the `PreToolUse` hook (agents/hooks/bash_gate.py) for every Bash call an
+    Assistant makes. Resolves immediately if the command is already allowlisted; otherwise
+    the row stays 'pending' until a human decides via POST .../decide, and the hook polls
+    GET /bash-approvals/{id} until it does."""
+    approval_id = uuid.uuid4().hex
+    status = db.insert_bash_approval(approval_id, body.run_id, body.task_id, body.command, body.cwd)
+    return {"id": approval_id, "status": status}
+
+
+@app.get("/bash-approvals/pending")
+def list_pending_bash_approvals():
+    return [_serialize_bash_approval(row) for row in db.list_pending_bash_approvals()]
+
+
+@app.get("/bash-approvals/{approval_id}")
+def get_bash_approval(approval_id: str):
+    row = db.get_bash_approval(approval_id)
+    if row is None:
+        raise HTTPException(404, f"bash approval '{approval_id}' not found")
+    return _serialize_bash_approval(row)
+
+
+@app.post("/bash-approvals/{approval_id}/decide")
+def decide_bash_approval(approval_id: str, body: BashApprovalDecideBody):
+    row = db.get_bash_approval(approval_id)
+    if row is None:
+        raise HTTPException(404, f"bash approval '{approval_id}' not found")
+    if row["status"] != "pending":
+        raise HTTPException(409, f"bash approval already decided (status: {row['status']})")
+    if body.decision not in ("approve", "deny"):
+        raise HTTPException(400, "decision must be 'approve' or 'deny'")
+
+    if body.decision == "deny":
+        db.decide_bash_approval(approval_id, "denied", feedback=body.feedback)
+        return _serialize_bash_approval(db.get_bash_approval(approval_id))
+
+    if body.allowlist_pattern:
+        db.insert_bash_allowlist_entry(uuid.uuid4().hex, body.allowlist_pattern)
+        db.decide_bash_approval(approval_id, "allowlisted")
+    else:
+        db.decide_bash_approval(approval_id, "approved")
+    return _serialize_bash_approval(db.get_bash_approval(approval_id))
+
+
+def _serialize_bash_allowlist_entry(row) -> dict:
+    return {"id": row["id"], "pattern": row["pattern"], "created_at": row["created_at"]}
+
+
+@app.get("/bash-allowlist")
+def list_bash_allowlist():
+    return [_serialize_bash_allowlist_entry(row) for row in db.list_bash_allowlist()]
+
+
+@app.post("/bash-allowlist")
+def create_bash_allowlist_entry(body: BashAllowlistCreateBody):
+    entry_id = uuid.uuid4().hex
+    db.insert_bash_allowlist_entry(entry_id, body.pattern)
+    return {"id": entry_id, "pattern": body.pattern}
+
+
+@app.delete("/bash-allowlist/{entry_id}")
+def delete_bash_allowlist_entry(entry_id: str):
+    db.delete_bash_allowlist_entry(entry_id)
+    return {"id": entry_id, "deleted": True}
 
 
 @app.get("/agents/masterminds")

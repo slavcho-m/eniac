@@ -35,9 +35,16 @@ export interface Task {
   tasks_approved_at: string | null;
   pending_questions: string[] | null;
   error: string | null;
+  has_pending_amendment: boolean;
 }
 
-export type TaskItemStatus = "pending" | "in_progress" | "awaiting_review" | "done" | "blocked";
+export type TaskItemStatus =
+  | "pending"
+  | "in_progress"
+  | "awaiting_review"
+  | "done"
+  | "blocked"
+  | "deprecated";
 
 export interface TaskItemLatestRun {
   id: string;
@@ -53,10 +60,12 @@ export interface TaskItem {
   assistant: string;
   status: TaskItemStatus;
   blocked_reason: string | null;
+  deprecated_reason: string | null;
+  depends_on: string[];
   latest_run: TaskItemLatestRun | null;
 }
 
-export type RunStage = "context" | "requirements" | "tasks" | "execution";
+export type RunStage = "context" | "requirements" | "tasks" | "execution" | "consultation";
 export type RunStatus = "running" | "completed" | "failed";
 
 export interface Run {
@@ -82,3 +91,54 @@ export interface AssistantInfo {
   name: string;
   configured: boolean;
 }
+
+export type BashApprovalStatus = "pending" | "approved" | "denied" | "allowlisted";
+
+export interface BashApproval {
+  id: string;
+  run_id: string | null;
+  task_id: string | null;
+  command: string;
+  cwd: string | null;
+  status: BashApprovalStatus;
+  created_at: string;
+  decided_at: string | null;
+  feedback: string | null;
+}
+
+export interface BashAllowlistEntry {
+  id: string;
+  pattern: string;
+  created_at: string;
+}
+
+export type AmendmentSource = "review" | "mastermind";
+
+export interface NewTaskProposal {
+  slug: string;
+  description: string;
+  assistant: string;
+  depends_on?: string[];
+}
+
+interface AmendmentBase {
+  task_id: string;
+  source: AmendmentSource;
+  origin_item_id: string | null;
+  resume_session_id: string;
+}
+
+export interface AmendmentClarification extends AmendmentBase {
+  kind: "clarification";
+  questions: string[];
+}
+
+export interface AmendmentProposal extends AmendmentBase {
+  kind: "proposal";
+  new_tasks: NewTaskProposal[];
+  deprecate_item_ids: string[];
+  reasoning: string;
+  diff: string;
+}
+
+export type TaskAmendment = AmendmentClarification | AmendmentProposal;

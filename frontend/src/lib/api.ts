@@ -1,4 +1,15 @@
-import type { AssistantInfo, Mastermind, Project, Run, Task, TaskFile, TaskItem } from "@/types/api";
+import type {
+  AssistantInfo,
+  BashAllowlistEntry,
+  BashApproval,
+  Mastermind,
+  Project,
+  Run,
+  Task,
+  TaskAmendment,
+  TaskFile,
+  TaskItem,
+} from "@/types/api";
 
 const BASE_URL = import.meta.env.VITE_BACKEND_URL;
 
@@ -137,6 +148,32 @@ export function reviewArtifact(
   });
 }
 
+// --- Task-list amendments ---
+
+export function getTaskAmendment(taskId: string): Promise<TaskAmendment> {
+  return request(`/tasks/${taskId}/amendment`);
+}
+
+export function approveAmendment(
+  taskId: string,
+): Promise<{ task_id: string; new_item_ids: string[]; deprecated_item_ids: string[] }> {
+  return request(`/tasks/${taskId}/approve-amendment`, { method: "POST" });
+}
+
+export function rejectAmendment(taskId: string, feedback: string): Promise<{ task_id: string; run_id: string }> {
+  return request(`/tasks/${taskId}/reject-amendment`, {
+    method: "POST",
+    body: JSON.stringify({ feedback }),
+  });
+}
+
+export function consultMastermind(taskId: string, message: string): Promise<{ task_id: string; run_id: string }> {
+  return request(`/tasks/${taskId}/consult-mastermind`, {
+    method: "POST",
+    body: JSON.stringify({ message }),
+  });
+}
+
 // --- Runs ---
 
 export function getRun(runId: string): Promise<Run> {
@@ -182,4 +219,37 @@ export function listMasterminds(): Promise<Mastermind[]> {
 
 export function listMastermindAssistants(mastermind: string): Promise<AssistantInfo[]> {
   return request(`/agents/masterminds/${mastermind}/assistants`);
+}
+
+// --- Bash approvals ---
+
+export function listPendingBashApprovals(): Promise<BashApproval[]> {
+  return request("/bash-approvals/pending");
+}
+
+export function decideBashApproval(
+  approvalId: string,
+  decision: "approve" | "deny",
+  allowlistPattern?: string,
+  feedback?: string,
+): Promise<BashApproval> {
+  return request(`/bash-approvals/${approvalId}/decide`, {
+    method: "POST",
+    body: JSON.stringify({ decision, allowlist_pattern: allowlistPattern, feedback }),
+  });
+}
+
+export function listBashAllowlist(): Promise<BashAllowlistEntry[]> {
+  return request("/bash-allowlist");
+}
+
+export function addBashAllowlistEntry(pattern: string): Promise<BashAllowlistEntry> {
+  return request("/bash-allowlist", {
+    method: "POST",
+    body: JSON.stringify({ pattern }),
+  });
+}
+
+export function deleteBashAllowlistEntry(entryId: string): Promise<{ id: string; deleted: true }> {
+  return request(`/bash-allowlist/${entryId}`, { method: "DELETE" });
 }

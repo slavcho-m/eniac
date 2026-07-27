@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -29,6 +30,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     requirements_approved_at TEXT,
     tasks_approved_at TEXT,
     error TEXT,
+    pending_amendment TEXT,
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS runs (
@@ -54,8 +56,26 @@ CREATE TABLE IF NOT EXISTS task_items (
     session_id TEXT,
     baseline_commit TEXT,
     blocked_reason TEXT,
+    deprecated_reason TEXT,
+    depends_on TEXT,
     created_at TEXT NOT NULL,
     PRIMARY KEY (task_id, item_id)
+);
+CREATE TABLE IF NOT EXISTS bash_allowlist (
+    id TEXT PRIMARY KEY,
+    pattern TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS bash_approvals (
+    id TEXT PRIMARY KEY,
+    run_id TEXT REFERENCES runs(id),
+    task_id TEXT REFERENCES tasks(id),
+    command TEXT NOT NULL,
+    cwd TEXT,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    decided_at TEXT,
+    feedback TEXT
 );
 """
 
@@ -91,6 +111,7 @@ def init_db() -> None:
             "requirements_approved_at TEXT",
             "tasks_approved_at TEXT",
             "error TEXT",
+            "pending_amendment TEXT",
         ):
             try:
                 conn.execute(f"ALTER TABLE tasks ADD COLUMN {column}")
@@ -101,9 +122,20 @@ def init_db() -> None:
                 conn.execute(f"ALTER TABLE runs ADD COLUMN {column}")
             except sqlite3.OperationalError:
                 pass
-        for column in ("session_id TEXT", "baseline_commit TEXT", "blocked_reason TEXT"):
+        for column in (
+            "session_id TEXT",
+            "baseline_commit TEXT",
+            "blocked_reason TEXT",
+            "deprecated_reason TEXT",
+            "depends_on TEXT",
+        ):
             try:
                 conn.execute(f"ALTER TABLE task_items ADD COLUMN {column}")
+            except sqlite3.OperationalError:
+                pass
+        for column in ("feedback TEXT",):
+            try:
+                conn.execute(f"ALTER TABLE bash_approvals ADD COLUMN {column}")
             except sqlite3.OperationalError:
                 pass
 
@@ -268,14 +300,73 @@ def approve_task_tasks(task_id: str) -> str:
     return approved_at
 
 
+def set_pending_amendment(task_id: str, amendment: Dict[str, Any]) -> None:
+    with connect() as conn:
+        conn.execute(
+            "UPDATE tasks SET pending_amendment = ? WHERE id = ?", (json.dumps(amendment), task_id)
+        )
+
+
+def get_pending_amendment(task_id: str) -> Optional[Dict[str, Any]]:
+    with connect() as conn:
+        row = conn.execute("SELECT pending_amendment FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row is None or row["pending_amendment"] is None:
+        return None
+    return json.loads(row["pending_amendment"])
+
+
+def clear_pending_amendment(task_id: str) -> None:
+    with connect() as conn:
+        conn.execute("UPDATE tasks SET pending_amendment = NULL WHERE id = ?", (task_id,))
+
+
 def insert_task_items(task_id: str, items: List[Dict[str, Any]]) -> None:
     with connect() as conn:
         for i, item in enumerate(items, start=1):
             conn.execute(
-                "INSERT INTO task_items (task_id, item_id, slug, description, assistant, status, created_at) "
-                "VALUES (?, ?, ?, ?, ?, 'pending', ?)",
-                (task_id, f"task{i}", item["slug"], item["description"], item["assistant"], now()),
+                "INSERT INTO task_items (task_id, item_id, slug, description, assistant, status, depends_on, created_at) "
+                "VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)",
+                (
+                    task_id,
+                    f"task{i}",
+                    item["slug"],
+                    item["description"],
+                    item["assistant"],
+                    json.dumps(item.get("depends_on", [])),
+                    now(),
+                ),
             )
+
+
+def append_task_items(task_id: str, items: List[Dict[str, Any]]) -> List[str]:
+    """Adds new task items to the end of an already-approved task list — e.g. from an
+    approved tasks.md amendment — continuing item_id numbering rather than restarting at
+    task1. Returns the new item_ids in order."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT item_id FROM task_items WHERE task_id = ? ORDER BY "
+            "CAST(SUBSTR(item_id, 5) AS INTEGER) DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        next_n = int(row["item_id"][4:]) + 1 if row else 1
+        new_item_ids = []
+        for i, item in enumerate(items):
+            item_id = f"task{next_n + i}"
+            new_item_ids.append(item_id)
+            conn.execute(
+                "INSERT INTO task_items (task_id, item_id, slug, description, assistant, status, depends_on, created_at) "
+                "VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)",
+                (
+                    task_id,
+                    item_id,
+                    item["slug"],
+                    item["description"],
+                    item["assistant"],
+                    json.dumps(item.get("depends_on", [])),
+                    now(),
+                ),
+            )
+    return new_item_ids
 
 
 def get_task_items(task_id: str) -> List[sqlite3.Row]:
@@ -320,9 +411,12 @@ def any_task_item_started(task_id: str) -> bool:
 
 
 def all_task_items_done(task_id: str) -> bool:
+    """Deprecated items are excluded — they're intentionally superseded, not owed a 'done'
+    status of their own, so they must not block the task from ever completing."""
     with connect() as conn:
         row = conn.execute(
-            "SELECT COUNT(*) AS c FROM task_items WHERE task_id = ? AND status != 'done'", (task_id,)
+            "SELECT COUNT(*) AS c FROM task_items WHERE task_id = ? AND status NOT IN ('done', 'deprecated')",
+            (task_id,),
         ).fetchone()
     return row["c"] == 0
 
@@ -349,6 +443,16 @@ def set_task_item_blocked(task_id: str, item_id: str, reason: str) -> None:
     with connect() as conn:
         conn.execute(
             "UPDATE task_items SET status = 'blocked', blocked_reason = ? WHERE task_id = ? AND item_id = ?",
+            (reason, task_id, item_id),
+        )
+
+
+def set_task_item_deprecated(task_id: str, item_id: str, reason: str) -> None:
+    """An approved amendment superseded this already-run item — flagged only, its diff is
+    never reverted (this project's standing rule: never auto-revert, never destructive)."""
+    with connect() as conn:
+        conn.execute(
+            "UPDATE task_items SET status = 'deprecated', deprecated_reason = ? WHERE task_id = ? AND item_id = ?",
             (reason, task_id, item_id),
         )
 
@@ -385,6 +489,14 @@ def get_task_baseline_commit(task_id: str) -> Optional[str]:
 def mark_task_completed(task_id: str) -> None:
     with connect() as conn:
         conn.execute("UPDATE tasks SET status = 'completed' WHERE id = ?", (task_id,))
+
+
+def reopen_task_for_execution(task_id: str) -> None:
+    """An approved amendment added real pending work to a task already sitting at
+    'completed' — routes back through ExecutionView instead of staying stuck on the
+    now-stale TerminalStateView. A no-op in effect if the task was already 'tasks_ready'."""
+    with connect() as conn:
+        conn.execute("UPDATE tasks SET status = 'tasks_ready' WHERE id = ?", (task_id,))
 
 
 def insert_run(run_id: str, task_id: str, stage: str, item_id: Optional[str] = None) -> None:
@@ -439,3 +551,70 @@ def get_latest_run_for_task(task_id: str) -> Optional[sqlite3.Row]:
             "SELECT * FROM runs WHERE task_id = ? ORDER BY created_at DESC LIMIT 1",
             (task_id,),
         ).fetchone()
+
+
+def _command_allowlisted(conn: sqlite3.Connection, command: str) -> bool:
+    """A pattern matches either exactly, or as a prefix if it ends in '*'. No real glob
+    engine — deliberately simple, expand only if a real use case needs more."""
+    for row in conn.execute("SELECT pattern FROM bash_allowlist").fetchall():
+        pattern = row["pattern"]
+        if pattern.endswith("*"):
+            if command.startswith(pattern[:-1]):
+                return True
+        elif command == pattern:
+            return True
+    return False
+
+
+def insert_bash_approval(
+    approval_id: str, run_id: Optional[str], task_id: Optional[str], command: str, cwd: Optional[str]
+) -> str:
+    """Creates the approval row and immediately resolves it if the command is already
+    allowlisted, so the caller (the PreToolUse hook) never has to wait in that case."""
+    with connect() as conn:
+        status = "allowlisted" if _command_allowlisted(conn, command) else "pending"
+        decided_at = now() if status == "allowlisted" else None
+        conn.execute(
+            "INSERT INTO bash_approvals (id, run_id, task_id, command, cwd, status, created_at, decided_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (approval_id, run_id, task_id, command, cwd, status, now(), decided_at),
+        )
+    return status
+
+
+def get_bash_approval(approval_id: str) -> Optional[sqlite3.Row]:
+    with connect() as conn:
+        return conn.execute("SELECT * FROM bash_approvals WHERE id = ?", (approval_id,)).fetchone()
+
+
+def list_pending_bash_approvals() -> List[sqlite3.Row]:
+    with connect() as conn:
+        return conn.execute(
+            "SELECT * FROM bash_approvals WHERE status = 'pending' ORDER BY created_at"
+        ).fetchall()
+
+
+def decide_bash_approval(approval_id: str, status: str, feedback: Optional[str] = None) -> None:
+    with connect() as conn:
+        conn.execute(
+            "UPDATE bash_approvals SET status = ?, decided_at = ?, feedback = ? WHERE id = ?",
+            (status, now(), feedback, approval_id),
+        )
+
+
+def list_bash_allowlist() -> List[sqlite3.Row]:
+    with connect() as conn:
+        return conn.execute("SELECT * FROM bash_allowlist ORDER BY created_at").fetchall()
+
+
+def insert_bash_allowlist_entry(entry_id: str, pattern: str) -> None:
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO bash_allowlist (id, pattern, created_at) VALUES (?, ?, ?)",
+            (entry_id, pattern, now()),
+        )
+
+
+def delete_bash_allowlist_entry(entry_id: str) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM bash_allowlist WHERE id = ?", (entry_id,))

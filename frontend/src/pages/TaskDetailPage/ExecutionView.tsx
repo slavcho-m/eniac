@@ -12,13 +12,14 @@ const BADGE_BY_ITEM_STATUS: Record<TaskItemStatus, { variant: BadgeVariant; labe
   awaiting_review: { variant: "warning", label: "Awaiting Review" },
   done: { variant: "success", label: "Done" },
   blocked: { variant: "error", label: "Blocked" },
+  deprecated: { variant: "deprecated", label: "Deprecated" },
 };
 
 interface ExecutionViewProps {
   task: Task;
   items: TaskItem[] | undefined;
   onRefetch: () => void;
-  onRunStarted: (runId: string) => void;
+  onRunStarted: (runId: string, assistant?: string) => void;
 }
 
 // What diff is currently shown: the item awaiting the user's decision ("actionable" — the
@@ -112,7 +113,7 @@ export function ExecutionView({ task, items, onRefetch, onRunStarted }: Executio
     setError(null);
     try {
       const result = await approveAssistant(task.id);
-      onRunStarted(result.run_id);
+      onRunStarted(result.run_id, nextPending?.assistant);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start Assistant.");
       setSubmitting(false);
@@ -144,7 +145,7 @@ export function ExecutionView({ task, items, onRefetch, onRunStarted }: Executio
       setShowFeedbackForm(false);
       setSelectedFile(null);
       if (result.run_id) {
-        onRunStarted(result.run_id);
+        onRunStarted(result.run_id, actionable?.assistant);
       } else {
         onRefetch();
         setSubmitting(false);
@@ -213,6 +214,8 @@ export function ExecutionView({ task, items, onRefetch, onRunStarted }: Executio
           <InFlightView
             label={`${inProgress.assistant} Assistant working on ${inProgress.slug}…`}
             onRefetch={onRefetch}
+            runId={inProgress.latest_run?.id}
+            assistantLabel={inProgress.assistant}
           />
         ) : null}
 

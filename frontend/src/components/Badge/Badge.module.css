@@ -41,3 +41,10 @@
   background: var(--neutral-bg);
   border-color: var(--neutral-border);
 }
+
+.deprecated {
+  color: var(--text-tertiary);
+  background: transparent;
+  border-color: var(--border-hairline);
+  text-decoration: line-through;
+}

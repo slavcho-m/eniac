@@ -27,20 +27,50 @@ MASTERMIND_ASSISTANTS = {
 }
 
 # Tool access differs by Assistant type, unlike Masterminds (uniformly read-only investigate):
-# Design/Implementation write code, Review only reads it. Test does NOT get Bash — arbitrary
-# unattended command execution (bypassPermissions, no per-command approval possible in
-# headless -p mode) is an unbounded risk unscoped by git-diff review, unlike Edit/Write which
-# are path-scoped and fully revertible. Test just writes tests following existing conventions;
-# a human runs them before approving, same as they'd review any other diff. Decided 2026-07-24
-# after finding the alternative (a real per-command approval hook) would need a new blocking,
-# synchronous approval mechanism this codebase doesn't have — not worth it for what's a
-# convenience (auto-verifying pass/fail) rather than a core capability gap.
+# Design/Implementation write code, Review only reads it. Analysis (DevOps) is investigation
+# only, same read-only stance as Review. Test, CI-CD Implementer, and Environment get real
+# Bash — every call is gated per-command by a PreToolUse hook (agents/hooks/bash_gate.py,
+# wired in below) that asks the Eniac backend for a decision: an instant answer if the exact
+# command is already on the `bash_allowlist`, otherwise a real wait for a human to approve/
+# deny/allowlist it via the UI. This replaced an earlier all-or-nothing `bypassPermissions`
+# grant (tried for Test on 2026-07-24, reverted the same day — no per-command gate, an
+# unbounded risk unscoped by git-diff review, unlike Edit/Write which are path-scoped and
+# fully revertible) once the hook mechanism was built and verified live. See
+# [[eniac-no-unattended-bash]] for that history — this supersedes it, not contradicts it.
 ASSISTANT_TOOLS = {
     "Design": "Edit,Write,Read,Grep,Glob",
     "Implementation": "Edit,Write,Read,Grep,Glob",
     "Review": "Read,Grep,Glob",
-    "Test": "Edit,Write,Read,Grep,Glob",
+    "Test": "Edit,Write,Read,Grep,Glob,Bash",
+    "Analysis": "Read,Grep,Glob",
+    "CI-CD Implementer": "Edit,Write,Read,Grep,Glob,Bash",
+    "Environment": "Edit,Write,Read,Grep,Glob,Bash",
 }
+
+# The backend's own base URL, so the PreToolUse hook (a subprocess of `claude`, not of this
+# process) knows where to POST/poll approval requests. No prior "my own base URL" concept
+# existed in this codebase (port 1946 was only ever hardcoded in scripts/start.sh) — this
+# introduces it minimally, overridable via env, defaulting to the documented dev port.
+ENIAC_BACKEND_URL = os.environ.get("ENIAC_BACKEND_URL", "http://localhost:1946")
+BASH_GATE_HOOK_PATH = REPO_ROOT / "agents" / "hooks" / "bash_gate.py"
+
+
+def _bash_hook_settings() -> str:
+    """A `--settings` JSON string (confirmed via live spike: the CLI accepts an inline JSON
+    string, not just a file path) registering the Bash-gating PreToolUse hook, without
+    writing anything into the target workspace's own .claude/ directory."""
+    return json.dumps(
+        {
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "Bash",
+                        "hooks": [{"type": "command", "command": f"python3 {BASH_GATE_HOOK_PATH}"}],
+                    }
+                ]
+            }
+        }
+    )
 
 
 # On a fresh call, the stage's prompt.md carries the JSON-output contract. A resumed call
@@ -65,12 +95,18 @@ _RESUME_REMINDERS = {
     "tasks": (
         'Reminder: respond with only a single JSON object -- no markdown fences, no prose '
         'before or after it -- either {"status": "needs_clarification", "questions": [...]} '
-        'or {"status": "ready", "tasks": [{"slug": ..., "description": ..., "assistant": ...}, ...]}.'
+        'or {"status": "ready", "tasks": [{"slug": ..., "description": ..., "assistant": ..., '
+        '"depends_on": [...]}, ...]}.'
     ),
     "execution": (
         'Reminder: respond with only a single JSON object -- no markdown fences, no prose '
         'before or after it -- either {"status": "done", "summary": ...} or '
         '{"status": "blocked", "reason": ...}.'
+    ),
+    "consultation": (
+        'Reminder: respond with only a single JSON object -- no markdown fences, no prose '
+        'before or after it -- either {"status": "needs_clarification", "questions": [...]} '
+        'or {"status": "ready", "new_tasks": [...], "deprecate_item_ids": [...], "reasoning": ...}.'
     ),
 }
 
@@ -189,6 +225,32 @@ def working_tree_diff(cwd: Path, since: Optional[str] = None) -> str:
     return subprocess.run(
         ["git", "-C", str(cwd), "diff", base, current_tree], capture_output=True, text=True
     ).stdout
+
+
+def text_diff(old_content: str, new_content: str, filename: str) -> str:
+    """A unified diff between two in-memory text blobs (e.g. a tasks.md amendment's before/
+    after), formatted exactly like real `git diff` output so the frontend's existing
+    parseDiff/DiffViewer render it with zero changes — same `git diff --no-index` technique
+    used elsewhere in this file for untracked files, git as the diffing engine, header
+    rewritten so the displayed filename is clean rather than a temp path."""
+    if old_content == new_content:
+        return ""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        old_path = Path(tmp_dir) / "old"
+        new_path = Path(tmp_dir) / "new"
+        old_path.write_text(old_content)
+        new_path.write_text(new_content)
+        result = subprocess.run(
+            ["git", "diff", "--no-index", "--", str(old_path), str(new_path)],
+            capture_output=True,
+            text=True,
+        )
+    body_lines = result.stdout.splitlines()
+    hunk_start = next((i for i, line in enumerate(body_lines) if line.startswith("@@")), None)
+    if hunk_start is None:
+        return ""
+    header = f"diff --git a/{filename} b/{filename}\n--- a/{filename}\n+++ b/{filename}\n"
+    return header + "\n".join(body_lines[hunk_start:]) + "\n"
 
 
 def _extract_balanced_object(text: str) -> Optional[str]:
@@ -318,13 +380,24 @@ def _parse_tasks_json(result_text: str, mastermind: str) -> Dict[str, Any]:
     raise ValueError(f"unknown status: {data.get('status')!r}")
 
 
-def _parse_assistant_json(result_text: str) -> Dict[str, Any]:
+def _parse_assistant_json(result_text: str, mastermind: Optional[str] = None) -> Dict[str, Any]:
     data = json.loads(_strip_fences(result_text))
     status_val = data.get("status")
 
     if status_val == "done":
         if "summary" not in data:
             raise ValueError("missing summary")
+        new_tasks = data.get("new_tasks")
+        if new_tasks:
+            # An Assistant (Review, today) proposing task items — validated the same way a
+            # Mastermind's own tasks.md items are, so a bad proposal fails loudly here
+            # rather than silently staging garbage.
+            valid_assistants = MASTERMIND_ASSISTANTS[mastermind] if mastermind else None
+            for item in new_tasks:
+                if not {"slug", "description", "assistant"} <= item.keys():
+                    raise ValueError(f"invalid proposed task item: {item}")
+                if valid_assistants and item["assistant"] not in valid_assistants:
+                    raise ValueError(f"invalid assistant in proposed task: {item['assistant']!r}")
         return data
 
     if status_val == "blocked":
@@ -333,6 +406,30 @@ def _parse_assistant_json(result_text: str) -> Dict[str, Any]:
         return data
 
     raise ValueError(f"unknown status: {status_val!r}")
+
+
+def _parse_consultation_json(result_text: str, mastermind: str) -> Dict[str, Any]:
+    data = json.loads(_strip_fences(result_text))
+
+    if data.get("status") == "needs_clarification":
+        return _parse_needs_clarification(data)
+
+    if data.get("status") == "ready":
+        required = {"new_tasks", "deprecate_item_ids", "reasoning"}
+        missing = required - data.keys()
+        if missing:
+            raise ValueError(f"missing keys: {missing}")
+        valid_assistants = MASTERMIND_ASSISTANTS[mastermind]
+        for item in data["new_tasks"]:
+            if not {"slug", "description", "assistant"} <= item.keys():
+                raise ValueError(f"invalid task item: {item}")
+            if item["assistant"] not in valid_assistants:
+                raise ValueError(f"invalid assistant: {item['assistant']!r}")
+        if not data["new_tasks"] and not data["deprecate_item_ids"]:
+            raise ValueError("consultation must propose at least one new task or deprecation")
+        return data
+
+    raise ValueError(f"unknown status: {data.get('status')!r}")
 
 
 def _render_context_md(data: Dict[str, Any]) -> str:
@@ -395,6 +492,36 @@ def _render_requirements_md(data: Dict[str, Any]) -> str:
 """
 
 
+def _resolve_slug_references(
+    task_id: str, new_tasks: List[Dict[str, Any]], deprecate_refs: Optional[List[str]] = None
+):
+    """`depends_on`/`deprecate_item_ids` from a Review proposal or Mastermind consultation
+    can reference an item by its real item_id (task2) or by slug (write-multiply-tests) —
+    found live: a real consultation response used slugs throughout despite the prompt's
+    item_id-shaped example, a more natural identifier for a model reasoning about the task
+    list than its incidental position label. Rather than fight that, resolve either shape
+    here — same slug-to-item_id lookup `_write_tasks` already does at original creation
+    time, extended to also cover newly-proposed items referencing each other within the
+    same batch (assigned the same provisional item_ids `append_task_items` will really use).
+    Falls back to the given value unchanged if it doesn't match any known slug, so an
+    already-real item_id passes through untouched.
+    """
+    existing = db.get_task_items(task_id)
+    slug_to_item_id = {item["slug"]: item["item_id"] for item in existing}
+    next_n = len(existing) + 1
+    for offset, item in enumerate(new_tasks):
+        slug_to_item_id.setdefault(item["slug"], f"task{next_n + offset}")
+
+    resolved_new_tasks = [
+        {**item, "depends_on": [slug_to_item_id.get(s, s) for s in item.get("depends_on", [])]}
+        for item in new_tasks
+    ]
+    resolved_deprecate = (
+        [slug_to_item_id.get(s, s) for s in deprecate_refs] if deprecate_refs is not None else None
+    )
+    return resolved_new_tasks, resolved_deprecate
+
+
 def _write_requirements(
     project_id: str, task_id: str, mastermind: str, feature_slug: str, session_id: str, data: Dict[str, Any]
 ) -> None:
@@ -403,22 +530,50 @@ def _write_requirements(
     db.set_task_requirements_ready(task_id, session_id)
 
 
-def _render_tasks_md(items: List[Dict[str, Any]]) -> str:
+def render_tasks_md(items: List[Dict[str, Any]]) -> str:
+    """Each item may optionally carry `item_id` (falls back to positional `task{i}` at
+    original creation time, when items don't have one assigned yet), `deprecated`/
+    `deprecated_reason` (an approved amendment superseded it), and `depends_on` (item_ids
+    it builds on) — one renderer used both for the original write and for re-rendering an
+    amended document, not two."""
     sections = []
     for i, item in enumerate(items, start=1):
-        sections.append(
-            f"## task{i}: {item['slug']}\n\n{item['description']}\n\n"
-            f"**Recommended Assistant:** {item['assistant']}"
-        )
+        item_id = item.get("item_id") or f"task{i}"
+        label = f"{item_id}: {item['slug']}"
+        if item.get("deprecated"):
+            reason = item.get("deprecated_reason") or "superseded"
+            heading = f"## ~~{label}~~ (deprecated — {reason})"
+        else:
+            heading = f"## {label}"
+        section = f"{heading}\n\n{item['description']}\n\n**Recommended Assistant:** {item['assistant']}"
+        depends_on = item.get("depends_on")
+        if depends_on:
+            section += f"\n\n**Depends on:** {', '.join(depends_on)}"
+        sections.append(section)
     return "# Tasks\n\n" + "\n\n".join(sections) + "\n"
 
 
 def _write_tasks(
     project_id: str, task_id: str, mastermind: str, feature_slug: str, session_id: str, data: Dict[str, Any]
 ) -> None:
+    # The Mastermind declares `depends_on` by slug (item_ids don't exist yet while it's
+    # still composing the list) — resolved to real item_ids here, once, at creation time,
+    # so cascading deprecation later is a lookup rather than the model reverse-engineering
+    # dependencies from diffs after the fact. An unrecognized slug (hallucinated/typo'd) is
+    # dropped rather than raising, since this is untrusted model output.
+    slug_to_item_id = {item["slug"]: f"task{i}" for i, item in enumerate(data["tasks"], start=1)}
+    resolved_tasks = [
+        {
+            **item,
+            "depends_on": [
+                slug_to_item_id[s] for s in item.get("depends_on", []) if s in slug_to_item_id
+            ],
+        }
+        for item in data["tasks"]
+    ]
     feature_dir = db.PPM_ROOT / project_id / mastermind / "features" / feature_slug
-    (feature_dir / "tasks.md").write_text(_render_tasks_md(data["tasks"]))
-    db.insert_task_items(task_id, data["tasks"])
+    (feature_dir / "tasks.md").write_text(render_tasks_md(resolved_tasks))
+    db.insert_task_items(task_id, resolved_tasks)
     db.set_task_tasks_ready(task_id, session_id)
 
 
@@ -471,10 +626,11 @@ async def start_run(
     # real run) without breaking normal OAuth auth, unlike --bare. Assistants deliberately
     # skip --safe-mode — user decision: normal hooks/plugins should stay active for the
     # stage that actually writes code.
+    extra_env: Dict[str, str] = {}
     if stage == "context":
         cwd: Optional[Path] = db.PPM_ROOT / project_id
         tool_flags = ["--tools", "", "--safe-mode"]
-    elif stage in ("requirements", "tasks"):
+    elif stage in ("requirements", "tasks", "consultation"):
         assert workspace_path is not None
         cwd = Path(workspace_path).expanduser()
         tool_flags = ["--tools", "Read,Grep,Glob", "--safe-mode"]
@@ -485,15 +641,15 @@ async def start_run(
         tool_flags = ["--tools", tools_str]
         # Edit/Write/Bash being in --tools isn't enough in non-interactive -p mode — without
         # an explicit permission mode, the CLI denies the actual calls (found via two real
-        # runs: "permission_denials" in the transcript, task_item stuck in-progress). Verified
-        # empirically that acceptEdits (auto-accepts file edits, narrower than
-        # bypassPermissions) does NOT cover Bash — every Bash call was still denied
-        # ("This command requires approval") even with acceptEdits, and even when the model
-        # itself tried dangerouslyDisableSandbox. Bash needs the broader bypassPermissions;
-        # Edit/Write alone can stay on the narrower acceptEdits. Review gets neither — it has
-        # no write tools, so there's nothing to grant permission for.
+        # runs: "permission_denials" in the transcript, task_item stuck in-progress).
+        # acceptEdits auto-accepts Edit/Write; Bash is gated separately, per-command, by the
+        # PreToolUse hook registered via --settings (confirmed live: a hook's explicit
+        # allow/deny decision is honored without needing bypassPermissions at all — the hook
+        # fires before the permission-mode check). Review gets neither flag — it has no write
+        # tools, nothing to grant permission for.
         if "Bash" in tools_str:
-            tool_flags += ["--permission-mode", "bypassPermissions"]
+            tool_flags += ["--permission-mode", "acceptEdits", "--settings", _bash_hook_settings()]
+            extra_env = {"ENIAC_BACKEND_URL": ENIAC_BACKEND_URL, "ENIAC_RUN_ID": run_id, "ENIAC_TASK_ID": task_id}
         elif any(t in tools_str for t in ("Edit", "Write")):
             tool_flags += ["--permission-mode", "acceptEdits"]
     else:
@@ -522,6 +678,7 @@ async def start_run(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
         cwd=cwd,
+        env={**os.environ, **extra_env} if extra_env else None,
     )
 
     transcript_lines = []
@@ -617,7 +774,7 @@ async def start_run(
                 result_text = wrapper["result"]
                 await queue.put(result_text)
 
-                data = _parse_assistant_json(result_text)
+                data = _parse_assistant_json(result_text, mastermind)
                 db.set_task_item_session(task_id, item_id, session_id)
 
                 assert cwd is not None
@@ -627,11 +784,71 @@ async def start_run(
 
                 if data["status"] == "done":
                     db.set_task_item_status(task_id, item_id, "awaiting_review")
+                    # An Assistant (Review, today) can propose new task items alongside its
+                    # own normal done/report — independent of that report's own approval,
+                    # staged the same way a Mastermind consultation's proposal is.
+                    new_tasks = data.get("new_tasks")
+                    if new_tasks:
+                        resolved_new_tasks, _ = _resolve_slug_references(task_id, new_tasks)
+                        db.set_pending_amendment(
+                            task_id,
+                            {
+                                "kind": "proposal",
+                                "source": "review",
+                                "origin_item_id": item_id,
+                                "resume_session_id": session_id,
+                                "new_tasks": resolved_new_tasks,
+                                "deprecate_item_ids": [],
+                                "reasoning": data["summary"],
+                            },
+                        )
                 else:
                     # "blocked" — the Assistant is asking for guidance, not crashing.
                     # Only this item stops; the task and its other items stay alive,
                     # resolved the same way a rejected review is (resume + feedback).
                     db.set_task_item_blocked(task_id, item_id, data["reason"])
+            except Exception as exc:
+                db.mark_task_failed(task_id, f"Failed to process agent response: {exc}")
+        else:
+            db.mark_task_failed(task_id, _process_failure_reason(process.returncode, transcript))
+
+    elif stage == "consultation":
+        if status == "completed":
+            try:
+                wrapper = json.loads(transcript)
+                session_id = wrapper["session_id"]
+                result_text = wrapper["result"]
+                await queue.put(result_text)
+
+                assert mastermind is not None
+                data = _parse_consultation_json(result_text, mastermind)
+                if data["status"] == "needs_clarification":
+                    db.set_pending_amendment(
+                        task_id,
+                        {
+                            "kind": "clarification",
+                            "source": "mastermind",
+                            "origin_item_id": None,
+                            "resume_session_id": session_id,
+                            "questions": data["questions"],
+                        },
+                    )
+                else:
+                    resolved_new_tasks, resolved_deprecate = _resolve_slug_references(
+                        task_id, data["new_tasks"], data["deprecate_item_ids"]
+                    )
+                    db.set_pending_amendment(
+                        task_id,
+                        {
+                            "kind": "proposal",
+                            "source": "mastermind",
+                            "origin_item_id": None,
+                            "resume_session_id": session_id,
+                            "new_tasks": resolved_new_tasks,
+                            "deprecate_item_ids": resolved_deprecate,
+                            "reasoning": data["reasoning"],
+                        },
+                    )
             except Exception as exc:
                 db.mark_task_failed(task_id, f"Failed to process agent response: {exc}")
         else:

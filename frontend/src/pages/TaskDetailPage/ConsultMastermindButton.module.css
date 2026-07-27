@@ -1,0 +1,19 @@
+.button {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border-hairline);
+  background: none;
+  border-radius: var(--radius-card);
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+
+.button:hover {
+  color: var(--text-primary);
+  background: var(--neutral-bg);
+}
