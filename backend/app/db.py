@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS task_items (
     blocked_reason TEXT,
     deprecated_reason TEXT,
     depends_on TEXT,
+    sort_order INTEGER,
     created_at TEXT NOT NULL,
     PRIMARY KEY (task_id, item_id)
 );
@@ -128,11 +129,18 @@ def init_db() -> None:
             "blocked_reason TEXT",
             "deprecated_reason TEXT",
             "depends_on TEXT",
+            "sort_order INTEGER",
         ):
             try:
                 conn.execute(f"ALTER TABLE task_items ADD COLUMN {column}")
             except sqlite3.OperationalError:
                 pass
+        # Backfill for rows that predate sort_order — item_id's own numeric suffix is the
+        # only prior ordering signal, and it's what sort_order continues from going forward.
+        conn.execute(
+            "UPDATE task_items SET sort_order = CAST(SUBSTR(item_id, 5) AS INTEGER) "
+            "WHERE sort_order IS NULL"
+        )
         for column in ("feedback TEXT",):
             try:
                 conn.execute(f"ALTER TABLE bash_approvals ADD COLUMN {column}")
@@ -324,8 +332,8 @@ def insert_task_items(task_id: str, items: List[Dict[str, Any]]) -> None:
     with connect() as conn:
         for i, item in enumerate(items, start=1):
             conn.execute(
-                "INSERT INTO task_items (task_id, item_id, slug, description, assistant, status, depends_on, created_at) "
-                "VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)",
+                "INSERT INTO task_items (task_id, item_id, slug, description, assistant, status, depends_on, sort_order, created_at) "
+                "VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
                 (
                     task_id,
                     f"task{i}",
@@ -333,15 +341,24 @@ def insert_task_items(task_id: str, items: List[Dict[str, Any]]) -> None:
                     item["description"],
                     item["assistant"],
                     json.dumps(item.get("depends_on", [])),
+                    i,
                     now(),
                 ),
             )
 
 
-def append_task_items(task_id: str, items: List[Dict[str, Any]]) -> List[str]:
-    """Adds new task items to the end of an already-approved task list — e.g. from an
-    approved tasks.md amendment — continuing item_id numbering rather than restarting at
-    task1. Returns the new item_ids in order."""
+def append_task_items(
+    task_id: str, items: List[Dict[str, Any]], after_item_id: Optional[str] = None
+) -> List[str]:
+    """Adds new task items to an already-approved task list — e.g. from an approved
+    tasks.md amendment — continuing item_id numbering rather than restarting at task1
+    (item_id is a stable identity, referenced by depends_on/deprecate_item_ids/diffs, so
+    it never moves). Execution/display order is tracked separately via sort_order: with
+    `after_item_id` (e.g. the Review item that proposed these), the new items are slotted
+    in right after it — a Review-proposed fix should run before whatever was already
+    queued behind the reviewed item, not after it just because its item_id is higher.
+    Without it (e.g. a Mastermind consultation with no single originating item), new items
+    still land at the tail, same as before. Returns the new item_ids in order."""
     with connect() as conn:
         row = conn.execute(
             "SELECT item_id FROM task_items WHERE task_id = ? ORDER BY "
@@ -349,13 +366,34 @@ def append_task_items(task_id: str, items: List[Dict[str, Any]]) -> List[str]:
             (task_id,),
         ).fetchone()
         next_n = int(row["item_id"][4:]) + 1 if row else 1
+
+        anchor_row = None
+        if after_item_id:
+            anchor_row = conn.execute(
+                "SELECT sort_order FROM task_items WHERE task_id = ? AND item_id = ?",
+                (task_id, after_item_id),
+            ).fetchone()
+        if anchor_row is not None:
+            anchor = anchor_row["sort_order"]
+        else:
+            tail_row = conn.execute(
+                "SELECT MAX(sort_order) AS max_sort_order FROM task_items WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+            anchor = tail_row["max_sort_order"] or 0
+
+        conn.execute(
+            "UPDATE task_items SET sort_order = sort_order + ? WHERE task_id = ? AND sort_order > ?",
+            (len(items), task_id, anchor),
+        )
+
         new_item_ids = []
         for i, item in enumerate(items):
             item_id = f"task{next_n + i}"
             new_item_ids.append(item_id)
             conn.execute(
-                "INSERT INTO task_items (task_id, item_id, slug, description, assistant, status, depends_on, created_at) "
-                "VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)",
+                "INSERT INTO task_items (task_id, item_id, slug, description, assistant, status, depends_on, sort_order, created_at) "
+                "VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
                 (
                     task_id,
                     item_id,
@@ -363,6 +401,7 @@ def append_task_items(task_id: str, items: List[Dict[str, Any]]) -> List[str]:
                     item["description"],
                     item["assistant"],
                     json.dumps(item.get("depends_on", [])),
+                    anchor + i + 1,
                     now(),
                 ),
             )
@@ -372,7 +411,7 @@ def append_task_items(task_id: str, items: List[Dict[str, Any]]) -> List[str]:
 def get_task_items(task_id: str) -> List[sqlite3.Row]:
     with connect() as conn:
         return conn.execute(
-            "SELECT * FROM task_items WHERE task_id = ? ORDER BY item_id", (task_id,)
+            "SELECT * FROM task_items WHERE task_id = ? ORDER BY sort_order", (task_id,)
         ).fetchall()
 
 
@@ -386,7 +425,7 @@ def get_task_item(task_id: str, item_id: str) -> Optional[sqlite3.Row]:
 def get_next_pending_item(task_id: str) -> Optional[sqlite3.Row]:
     with connect() as conn:
         return conn.execute(
-            "SELECT * FROM task_items WHERE task_id = ? AND status = 'pending' ORDER BY item_id LIMIT 1",
+            "SELECT * FROM task_items WHERE task_id = ? AND status = 'pending' ORDER BY sort_order LIMIT 1",
             (task_id,),
         ).fetchone()
 
@@ -480,7 +519,7 @@ def get_task_baseline_commit(task_id: str) -> Optional[str]:
     with connect() as conn:
         row = conn.execute(
             "SELECT baseline_commit FROM task_items WHERE task_id = ? AND baseline_commit IS NOT NULL "
-            "ORDER BY item_id LIMIT 1",
+            "ORDER BY sort_order LIMIT 1",
             (task_id,),
         ).fetchone()
     return row["baseline_commit"] if row else None

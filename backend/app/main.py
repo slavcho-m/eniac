@@ -672,8 +672,15 @@ def _amendment_render_items(task_id: str, amendment: dict) -> list:
     and, on approval, to write the real amended tasks.md."""
     deprecate_ids = set(amendment.get("deprecate_item_ids", []))
     reasoning = amendment.get("reasoning")
-    items = []
     existing = db.get_task_items(task_id)
+    next_n = len(existing) + 1
+    new_items = [
+        {**new_item, "item_id": f"task{next_n + offset}"}
+        for offset, new_item in enumerate(amendment.get("new_tasks", []))
+    ]
+    origin_item_id = amendment.get("origin_item_id")
+
+    items = []
     for item in existing:
         # Checks the item's actual DB status too, not just the (possibly not-yet-applied)
         # amendment's proposed ids — so this same helper renders correctly both as a
@@ -691,9 +698,13 @@ def _amendment_render_items(task_id: str, amendment: dict) -> list:
                 "deprecated_reason": item["deprecated_reason"] or (reasoning if is_deprecated else None),
             }
         )
-    next_n = len(existing) + 1
-    for offset, new_item in enumerate(amendment.get("new_tasks", [])):
-        items.append({**new_item, "item_id": f"task{next_n + offset}"})
+        # Mirrors db.append_task_items' positioning: new items from a Review proposal land
+        # right after the item that proposed them, not at the tail, so the preview diff
+        # matches what actually happens on approval.
+        if item["item_id"] == origin_item_id:
+            items.extend(new_items)
+    if origin_item_id is None:
+        items.extend(new_items)
     return items
 
 
@@ -739,7 +750,9 @@ def approve_amendment(task_id: str):
     for item_id in deprecate_ids:
         db.set_task_item_deprecated(task_id, item_id, reasoning)
 
-    new_item_ids = db.append_task_items(task_id, amendment.get("new_tasks", []))
+    new_item_ids = db.append_task_items(
+        task_id, amendment.get("new_tasks", []), after_item_id=amendment.get("origin_item_id")
+    )
     # Re-render from the now-updated DB state (deprecation + new items already applied
     # above) — pass an empty amendment since _amendment_render_items falls back to each
     # item's actual status, not the (now-stale) proposal.
