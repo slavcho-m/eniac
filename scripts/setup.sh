@@ -63,6 +63,25 @@ else
   esac
 fi
 
+echo "== Environment files =="
+
+setup_env_file() {
+  local dir="$1"
+  local example="$dir/.env.example"
+  local target="$dir/.env"
+  [ -f "$example" ] || return 0
+  if [ -f "$target" ]; then
+    echo "$target already exists, leaving it as-is."
+  else
+    cp "$example" "$target"
+    echo "Created $target from $(basename "$example")."
+  fi
+}
+
+setup_env_file "$REPO_ROOT"
+setup_env_file "$BACKEND_DIR"
+setup_env_file "$FRONTEND_DIR"
+
 echo "== Install dependencies =="
 
 if [ ! -f "$BACKEND_DIR/requirements.txt" ]; then
