@@ -43,6 +43,7 @@ def _fire_and_forget(run_id: str, coro) -> None:
 class ProjectCreate(BaseModel):
     name: str
     workspace_path: Optional[str] = None
+    description: Optional[str] = None
 
 
 class TaskCreateBody(BaseModel):
@@ -153,7 +154,7 @@ def write_file(path: str, body: WriteFileBody):
     return {"path": path, "written": True}
 
 
-def create_ppm_skeleton(name: str, workspace_path: Optional[str]) -> None:
+def create_ppm_skeleton(name: str, workspace_path: Optional[str], description: Optional[str] = None) -> None:
     """§4.2: POST /projects owns creating the project's PPM skeleton."""
     project_dir = db.PPM_ROOT / name
     (project_dir / "contracts").mkdir(parents=True, exist_ok=True)
@@ -164,7 +165,12 @@ def create_ppm_skeleton(name: str, workspace_path: Optional[str]) -> None:
     (project_dir / "architecture.md").touch()
     (project_dir / "project.json").write_text(
         json.dumps(
-            {"name": name, "workspace_path": workspace_path, "created_at": db.now()},
+            {
+                "name": name,
+                "workspace_path": workspace_path,
+                "description": description,
+                "created_at": db.now(),
+            },
             indent=2,
         )
     )
@@ -177,8 +183,8 @@ def create_project(body: ProjectCreate):
     if db.get_project(body.name) is not None:
         raise HTTPException(409, f"project '{body.name}' already exists")
 
-    db.insert_project(body.name, body.workspace_path)
-    create_ppm_skeleton(body.name, body.workspace_path)
+    db.insert_project(body.name, body.workspace_path, body.description)
+    create_ppm_skeleton(body.name, body.workspace_path, body.description)
     return _serialize_project(db.get_project(body.name))
 
 
@@ -199,6 +205,7 @@ def _serialize_project(project) -> dict:
     return {
         "id": project["id"],
         "workspace_path": project["workspace_path"],
+        "description": project["description"],
         "created_at": project["created_at"],
         "is_orchestrator": repos != ["."] and len(repos) > 0,
         "repos": repos,
@@ -271,6 +278,7 @@ def _serialize_task(task) -> dict:
         "error": task["error"],
         "has_pending_amendment": task["pending_amendment"] is not None,
         "repo_scope": task["repo_scope"],
+        "created_at": task["created_at"],
     }
 
 

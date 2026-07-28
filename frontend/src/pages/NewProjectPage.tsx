@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { AppShell, Button, Checkbox, Dialog, FormField, PageHeader, TextInput } from "@/components";
+import { AppShell, Button, Checkbox, Dialog, FormField, PageHeader, Textarea, TextInput } from "@/components";
 import { Sidebar } from "@/layout/Sidebar";
 import { ApiError, createProject, deleteProject } from "@/lib/api";
 
@@ -9,13 +9,14 @@ import { ApiError, createProject, deleteProject } from "@/lib/api";
 const NAME_PATTERN = /^[a-z0-9_-]+$/;
 
 /**
- * Route: "/new-project". Scoped to what the backend actually supports — no Description
- * field or Advanced Options (custom/imported PPM location), since neither is a real
- * backend capability yet. See docs/things-to-address.md.
+ * Route: "/new-project". Scoped to what the backend actually supports — no Advanced
+ * Options (custom/imported PPM location), since that isn't a real backend capability
+ * yet. See docs/things-to-address.md.
  */
 export function NewProjectPage() {
   const navigate = useNavigate();
   const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
   const [workspacePath, setWorkspacePath] = useState("");
   const [greenfield, setGreenfield] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -37,6 +38,7 @@ export function NewProjectPage() {
       const project = await createProject(
         trimmedName,
         greenfield ? undefined : workspacePath.trim() || undefined,
+        description.trim() || undefined,
       );
       if (project.is_orchestrator) {
         setOrchestratorPrompt({ id: project.id, repos: project.repos });
@@ -83,6 +85,15 @@ export function NewProjectPage() {
           }
         >
           <TextInput placeholder="payments-gateway" value={name} onChange={(e) => setName(e.target.value)} />
+        </FormField>
+
+        <FormField label="Description" helperText="Optional — a short note on what this project is.">
+          <Textarea
+            rows={2}
+            placeholder="What is this project for?"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+          />
         </FormField>
 
         <FormField

@@ -39,3 +39,4 @@ export { PageHeader } from "./PageHeader/PageHeader";
 
 export { Dialog } from "./Dialog/Dialog";
 export { ConfirmDialog } from "./ConfirmDialog/ConfirmDialog";
+export { AssistantPicker } from "./AssistantPicker/AssistantPicker";

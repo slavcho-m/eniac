@@ -48,10 +48,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 // --- Projects ---
 
-export function createProject(name: string, workspacePath?: string): Promise<Project> {
+export function createProject(
+  name: string,
+  workspacePath?: string,
+  description?: string,
+): Promise<Project> {
   return request("/projects", {
     method: "POST",
-    body: JSON.stringify({ name, workspace_path: workspacePath }),
+    body: JSON.stringify({ name, workspace_path: workspacePath, description }),
   });
 }
 

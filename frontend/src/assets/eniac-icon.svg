@@ -1,0 +1,15 @@
+<svg width="64" height="64" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="square" stroke-linejoin="miter">
+  <!-- Tube body: rounded-top rectangle -->
+  <path d="M 22 10 Q 22 6 26 6 L 38 6 Q 42 6 42 10 L 42 48 L 22 48 Z" />
+
+  <!-- Base separator line -->
+  <line x1="22" y1="44" x2="42" y2="44" />
+
+  <!-- Filament: zigzag inside the tube -->
+  <polyline points="28,16 36,22 28,28 36,34 28,40" />
+
+  <!-- Pins beneath the base -->
+  <line x1="27" y1="48" x2="27" y2="56" />
+  <line x1="32" y1="48" x2="32" y2="58" />
+  <line x1="37" y1="48" x2="37" y2="56" />
+</svg>

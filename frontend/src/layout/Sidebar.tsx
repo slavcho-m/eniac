@@ -5,7 +5,8 @@ import { Button, ConfirmDialog, NavListItem, ProjectSwitcher, SectionLabel } fro
 import { useProjects } from "@/hooks/useProjects";
 import { useProjectTasks } from "@/hooks/useProjectTasks";
 import { deleteTask } from "@/lib/api";
-import type { Task, TaskStatus } from "@/types/api";
+import { dateGroupLabel, formatRelativeTime } from "@/lib/formatRelativeTime";
+import type { Task } from "@/types/api";
 import { DeleteProjectDialog } from "./DeleteProjectDialog";
 import { ProjectSettingsDialog } from "./ProjectSettingsDialog";
 
@@ -14,20 +15,6 @@ interface SidebarProps {
    * so an in-place status change elsewhere on the page updates this list too. */
   refreshKey?: unknown;
 }
-
-const TASK_STATUS_LABEL: Record<TaskStatus, string> = {
-  running: "Running",
-  awaiting_clarification: "Awaiting Clarification",
-  context_ready: "Context Ready",
-  investigating: "Investigating",
-  awaiting_requirements_clarification: "Awaiting Requirements",
-  requirements_ready: "Requirements Ready",
-  planning_tasks: "Planning Tasks",
-  awaiting_tasks_clarification: "Awaiting Tasks",
-  tasks_ready: "Tasks Ready",
-  completed: "Completed",
-  failed: "Failed",
-};
 
 /** Groups tasks by which node (child repo) they're scoped to, for an orchestrator
  * project's sidebar -- one heading per node that actually has a task, plus an
@@ -41,6 +28,20 @@ function groupTasksByNode(tasks: Task[], repos: string[]): { label: string; task
     if (repo === ".") continue;
     const nodeTasks = tasks.filter((t) => t.repo_scope === repo);
     if (nodeTasks.length > 0) groups.push({ label: repo.split("/").pop() ?? repo, tasks: nodeTasks });
+  }
+  return groups;
+}
+
+/** Groups an ordinary (non-orchestrator) project's tasks into Today/Yesterday/date
+ * buckets, per the reference design — reuses the same {label, tasks} shape as
+ * groupTasksByNode so both render through the same JSX below. */
+function groupTasksByDate(tasks: Task[]): { label: string; tasks: Task[] }[] {
+  const groups: { label: string; tasks: Task[] }[] = [];
+  for (const task of tasks) {
+    const label = dateGroupLabel(task.created_at);
+    const group = groups.find((g) => g.label === label);
+    if (group) group.tasks.push(task);
+    else groups.push({ label, tasks: [task] });
   }
   return groups;
 }
@@ -59,7 +60,7 @@ export function Sidebar({ refreshKey }: SidebarProps) {
   const currentProject = projects?.find((p) => p.id === projectId);
   const taskGroups = currentProject?.is_orchestrator
     ? groupTasksByNode(tasks ?? [], currentProject.repos)
-    : null;
+    : groupTasksByDate(tasks ?? []);
 
   function renderTaskItem(task: Task) {
     return (
@@ -67,7 +68,7 @@ export function Sidebar({ refreshKey }: SidebarProps) {
         key={task.id}
         icon={<CheckSquare size={15} strokeWidth={1.75} />}
         label={task.feature_slug ?? task.prompt}
-        meta={TASK_STATUS_LABEL[task.status]}
+        meta={formatRelativeTime(task.created_at)}
         active={task.id === taskId}
         onClick={() => navigate(`/projects/${projectId}/tasks/${task.id}`)}
         onDelete={() => setDeleteTarget({ id: task.id, label: task.feature_slug ?? task.prompt })}
@@ -102,6 +103,15 @@ export function Sidebar({ refreshKey }: SidebarProps) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 4px 16px" }}>
+        <img src="/eniac-icon.svg" alt="" width={20} height={20} />
+        <span style={{ fontSize: "var(--text-label)", fontWeight: "var(--weight-label)", color: "var(--text-primary)" }}>
+          Eniac Workspace
+        </span>
+      </div>
+
+      <div style={{ marginBottom: 16, borderTop: "1px solid var(--border-hairline)" }} />
+
       <Button
         variant="secondary"
         icon={<Plus size={14} strokeWidth={1.75} />}
@@ -137,40 +147,22 @@ export function Sidebar({ refreshKey }: SidebarProps) {
             flexDirection: "column",
           }}
         >
-          {taskGroups ? (
-            taskGroups.length === 0 ? (
-              <>
-                <SectionLabel>Tasks</SectionLabel>
-                <p
-                  style={{ fontSize: "var(--text-hint)", color: "var(--text-tertiary)", padding: "4px 10px" }}
-                >
-                  No tasks yet.
-                </p>
-              </>
-            ) : (
-              taskGroups.map((group, i) => (
-                <div key={group.label} style={{ marginTop: i > 0 ? 20 : 0 }}>
-                  <SectionLabel>{group.label}</SectionLabel>
-                  <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 2 }}>
-                    {group.tasks.map(renderTaskItem)}
-                  </div>
-                </div>
-              ))
-            )
-          ) : (
+          {taskGroups.length === 0 ? (
             <>
               <SectionLabel>Tasks</SectionLabel>
-              <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 2 }}>
-                {tasks?.length === 0 ? (
-                  <p
-                    style={{ fontSize: "var(--text-hint)", color: "var(--text-tertiary)", padding: "4px 10px" }}
-                  >
-                    No tasks yet.
-                  </p>
-                ) : null}
-                {(tasks ?? []).map(renderTaskItem)}
-              </div>
+              <p style={{ fontSize: "var(--text-hint)", color: "var(--text-tertiary)", padding: "4px 10px" }}>
+                No tasks yet.
+              </p>
             </>
+          ) : (
+            taskGroups.map((group, i) => (
+              <div key={group.label} style={{ marginTop: i > 0 ? 20 : 0 }}>
+                <SectionLabel>{group.label}</SectionLabel>
+                <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 2 }}>
+                  {group.tasks.map(renderTaskItem)}
+                </div>
+              </div>
+            ))
           )}
         </div>
       )}

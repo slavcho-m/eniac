@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import {
+  AssistantPicker,
   Badge,
   Button,
   DiffSummaryChip,
@@ -37,12 +38,6 @@ interface ExecutionViewProps {
 // since — unlike a single item's diff — it isn't cached on any TaskItem already in hand).
 type ViewMode = { kind: "actionable" } | { kind: "item"; itemId: string } | { kind: "all" };
 
-/**
- * No Override Assistant picker yet — that needs a dropdown/modal pattern this component
- * library doesn't have (deliberately not building one just for this), so items run with
- * their Mastermind-recommended Assistant only. Approve-assistant's override param is
- * already there on the backend whenever this gets built.
- */
 export function ExecutionView({ task, items, onRefetch, onRunStarted }: ExecutionViewProps) {
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>({ kind: "actionable" });
@@ -53,7 +48,9 @@ export function ExecutionView({ task, items, onRefetch, onRunStarted }: Executio
   const [showFeedbackForm, setShowFeedbackForm] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
 
+  const mastermind = task.masterminds?.[0];
   const inProgress = items?.find((item) => item.status === "in_progress");
   const awaitingReview = items?.find((item) => item.status === "awaiting_review");
   const blocked = items?.find((item) => item.status === "blocked");
@@ -117,16 +114,21 @@ export function ExecutionView({ task, items, onRefetch, onRunStarted }: Executio
     }
   }
 
-  async function handleRunAssistant() {
+  async function handleRunAssistant(override?: string) {
     setSubmitting(true);
     setError(null);
     try {
-      const result = await approveAssistant(task.id);
-      onRunStarted(result.run_id, nextPending?.assistant);
+      const result = await approveAssistant(task.id, override);
+      onRunStarted(result.run_id, override ?? nextPending?.assistant);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start Assistant.");
       setSubmitting(false);
     }
+  }
+
+  function handleConfirmOverride(assistant: string) {
+    setPickerOpen(false);
+    void handleRunAssistant(assistant);
   }
 
   async function handleApprove() {
@@ -306,13 +308,29 @@ export function ExecutionView({ task, items, onRefetch, onRunStarted }: Executio
         ) : null}
 
         {!inProgress && !actionable && nextPending ? (
-          <div>
-            <Button variant="primary" onClick={handleRunAssistant} disabled={submitting}>
+          <div style={{ display: "flex", gap: 12 }}>
+            <Button variant="primary" onClick={() => void handleRunAssistant()} disabled={submitting}>
               {submitting ? "Starting…" : `Run ${nextPending.assistant} Assistant`}
             </Button>
+            {mastermind ? (
+              <Button variant="secondary" onClick={() => setPickerOpen(true)} disabled={submitting}>
+                Change Assistant
+              </Button>
+            ) : null}
           </div>
         ) : null}
       </div>
+
+      {mastermind && nextPending ? (
+        <AssistantPicker
+          open={pickerOpen}
+          onClose={() => setPickerOpen(false)}
+          mastermind={mastermind}
+          currentAssistant={nextPending.assistant}
+          onConfirm={handleConfirmOverride}
+          confirming={submitting}
+        />
+      ) : null}
 
       {actionable && viewMode.kind === "actionable" ? (
         <div style={{ flexShrink: 0, borderTop: "1px solid var(--border-hairline)", marginTop: 16, paddingTop: 16 }}>

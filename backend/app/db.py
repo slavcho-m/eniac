@@ -16,6 +16,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY,
     workspace_path TEXT,
+    description TEXT,
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS tasks (
@@ -148,6 +149,11 @@ def init_db() -> None:
         # ponytail: no migration framework (v1 decision, see ARCHITECTURE.md §5) —
         # existing dev DBs predating these columns get them added here; a fresh
         # DB already has them from CREATE TABLE above, so "duplicate column" is expected.
+        for column in ("description TEXT",):
+            try:
+                conn.execute(f"ALTER TABLE projects ADD COLUMN {column}")
+            except sqlite3.OperationalError:
+                pass
         for column in (
             "feature_slug TEXT",
             "masterminds TEXT",
@@ -206,11 +212,11 @@ def init_db() -> None:
             conn.execute("INSERT INTO bash_allowlist_seeded (id) VALUES (1)")
 
 
-def insert_project(name: str, workspace_path: Optional[str]) -> None:
+def insert_project(name: str, workspace_path: Optional[str], description: Optional[str] = None) -> None:
     with connect() as conn:
         conn.execute(
-            "INSERT INTO projects (id, workspace_path, created_at) VALUES (?, ?, ?)",
-            (name, workspace_path, now()),
+            "INSERT INTO projects (id, workspace_path, description, created_at) VALUES (?, ?, ?, ?)",
+            (name, workspace_path, description, now()),
         )
 
 
