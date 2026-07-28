@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Badge, Button, DiffSummaryChip, DiffViewer, PromptInput, SectionLabel } from "@/components";
+import { Badge, Button, DiffSummaryChip, DiffViewer, MarkdownText, PromptInput, SectionLabel } from "@/components";
 import { approveAmendment, getTaskAmendment, rejectAmendment } from "@/lib/api";
 import { useAsync } from "@/hooks/useAsync";
 import { parseDiff } from "@/lib/parseDiff";
@@ -79,9 +79,9 @@ export function AmendmentPanel({ taskId, onApproved, onRunStarted }: AmendmentPa
   return (
     <div style={{ border: "1px solid var(--border-hairline)", borderRadius: "var(--radius-card)", padding: 16 }}>
       <SectionLabel>Proposed Task Changes ({assistantLabel})</SectionLabel>
-      <p style={{ margin: "10px 0 0", color: "var(--text-secondary)", fontSize: "var(--text-body)" }}>
-        {amendment.reasoning}
-      </p>
+      <div style={{ marginTop: 10 }}>
+        <MarkdownText>{amendment.reasoning}</MarkdownText>
+      </div>
 
       {amendment.new_tasks.length > 0 ? (
         <div style={{ marginTop: 12 }}>

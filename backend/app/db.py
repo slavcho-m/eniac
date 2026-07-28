@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,6 +32,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     tasks_approved_at TEXT,
     error TEXT,
     pending_amendment TEXT,
+    repo_scope TEXT,
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS runs (
@@ -59,6 +61,7 @@ CREATE TABLE IF NOT EXISTS task_items (
     deprecated_reason TEXT,
     depends_on TEXT,
     sort_order INTEGER,
+    repo TEXT,
     created_at TEXT NOT NULL,
     PRIMARY KEY (task_id, item_id)
 );
@@ -66,6 +69,12 @@ CREATE TABLE IF NOT EXISTS bash_allowlist (
     id TEXT PRIMARY KEY,
     pattern TEXT NOT NULL,
     created_at TEXT NOT NULL
+);
+-- A single sentinel row marks "the default allowlist has been seeded" — deliberately not
+-- just "is bash_allowlist empty", since a user emptying it on purpose (wants zero
+-- auto-approvals for a while) shouldn't have it silently repopulated on the next restart.
+CREATE TABLE IF NOT EXISTS bash_allowlist_seeded (
+    id INTEGER PRIMARY KEY CHECK (id = 1)
 );
 CREATE TABLE IF NOT EXISTS bash_approvals (
     id TEXT PRIMARY KEY,
@@ -79,6 +88,42 @@ CREATE TABLE IF NOT EXISTS bash_approvals (
     feedback TEXT
 );
 """
+
+# Seeded once (see bash_allowlist_seeded) into a fresh — or pre-existing, upgrading — DB.
+# Deliberately specific subcommands/scripts, not bare tool names: "git" or "npm" alone
+# would also match their destructive subcommands ("git push --force", "npm publish") under
+# _command_allowlisted's whole-word-prefix matching, so every entry here is scoped to a
+# genuinely read-only or idempotent invocation. Common across the ecosystems this project
+# and its Assistants actually touch (Python/Node/Go/Rust/Java) — not exhaustive, just the
+# commands a human would rubber-stamp instantly every time anyway.
+DEFAULT_BASH_ALLOWLIST = [
+    "pwd",
+    "ls",
+    "cat",
+    "find",
+    "grep",
+    "head",
+    "tail",
+    "wc",
+    "git status",
+    "git diff",
+    "git log",
+    "git show",
+    "git branch",
+    "pytest",
+    "python -m pytest",
+    "python3 -m pytest",
+    "npm test",
+    "npm run test",
+    "npm run lint",
+    "npm run typecheck",
+    "npm run build",
+    "go test",
+    "cargo test",
+    "mvn test",
+    "./mvnw test",
+    "./gradlew test",
+]
 
 
 def now() -> str:
@@ -113,6 +158,7 @@ def init_db() -> None:
             "tasks_approved_at TEXT",
             "error TEXT",
             "pending_amendment TEXT",
+            "repo_scope TEXT",
         ):
             try:
                 conn.execute(f"ALTER TABLE tasks ADD COLUMN {column}")
@@ -130,6 +176,7 @@ def init_db() -> None:
             "deprecated_reason TEXT",
             "depends_on TEXT",
             "sort_order INTEGER",
+            "repo TEXT",
         ):
             try:
                 conn.execute(f"ALTER TABLE task_items ADD COLUMN {column}")
@@ -141,11 +188,22 @@ def init_db() -> None:
             "UPDATE task_items SET sort_order = CAST(SUBSTR(item_id, 5) AS INTEGER) "
             "WHERE sort_order IS NULL"
         )
+        # "." (the task's own effective workspace_path, unchanged) for every row that
+        # predates per-item repo scoping — matches the same default new rows get.
+        conn.execute("UPDATE task_items SET repo = '.' WHERE repo IS NULL")
         for column in ("feedback TEXT",):
             try:
                 conn.execute(f"ALTER TABLE bash_approvals ADD COLUMN {column}")
             except sqlite3.OperationalError:
                 pass
+
+        if conn.execute("SELECT 1 FROM bash_allowlist_seeded").fetchone() is None:
+            for pattern in DEFAULT_BASH_ALLOWLIST:
+                conn.execute(
+                    "INSERT INTO bash_allowlist (id, pattern, created_at) VALUES (?, ?, ?)",
+                    (uuid.uuid4().hex, pattern, now()),
+                )
+            conn.execute("INSERT INTO bash_allowlist_seeded (id) VALUES (1)")
 
 
 def insert_project(name: str, workspace_path: Optional[str]) -> None:
@@ -188,12 +246,12 @@ def delete_project(project_id: str) -> None:
         conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
 
 
-def insert_task(task_id: str, project_id: str, prompt: str) -> None:
+def insert_task(task_id: str, project_id: str, prompt: str, repo_scope: Optional[str] = None) -> None:
     with connect() as conn:
         conn.execute(
-            "INSERT INTO tasks (id, project_id, prompt, status, created_at) "
-            "VALUES (?, ?, ?, 'running', ?)",
-            (task_id, project_id, prompt, now()),
+            "INSERT INTO tasks (id, project_id, prompt, status, repo_scope, created_at) "
+            "VALUES (?, ?, ?, 'running', ?, ?)",
+            (task_id, project_id, prompt, repo_scope, now()),
         )
 
 
@@ -332,8 +390,8 @@ def insert_task_items(task_id: str, items: List[Dict[str, Any]]) -> None:
     with connect() as conn:
         for i, item in enumerate(items, start=1):
             conn.execute(
-                "INSERT INTO task_items (task_id, item_id, slug, description, assistant, status, depends_on, sort_order, created_at) "
-                "VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
+                "INSERT INTO task_items (task_id, item_id, slug, description, assistant, status, depends_on, sort_order, repo, created_at) "
+                "VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)",
                 (
                     task_id,
                     f"task{i}",
@@ -342,6 +400,7 @@ def insert_task_items(task_id: str, items: List[Dict[str, Any]]) -> None:
                     item["assistant"],
                     json.dumps(item.get("depends_on", [])),
                     i,
+                    item.get("repo") or ".",
                     now(),
                 ),
             )
@@ -392,8 +451,8 @@ def append_task_items(
             item_id = f"task{next_n + i}"
             new_item_ids.append(item_id)
             conn.execute(
-                "INSERT INTO task_items (task_id, item_id, slug, description, assistant, status, depends_on, sort_order, created_at) "
-                "VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
+                "INSERT INTO task_items (task_id, item_id, slug, description, assistant, status, depends_on, sort_order, repo, created_at) "
+                "VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)",
                 (
                     task_id,
                     item_id,
@@ -402,6 +461,7 @@ def append_task_items(
                     item["assistant"],
                     json.dumps(item.get("depends_on", [])),
                     anchor + i + 1,
+                    item.get("repo") or ".",
                     now(),
                 ),
             )
@@ -445,6 +505,22 @@ def any_task_item_started(task_id: str) -> bool:
     with connect() as conn:
         row = conn.execute(
             "SELECT COUNT(*) AS c FROM task_items WHERE task_id = ? AND status != 'pending'", (task_id,)
+        ).fetchone()
+    return row["c"] > 0
+
+
+def any_task_item_started_for_repo(task_id: str, repo: str) -> bool:
+    """Same as `any_task_item_started`, but scoped to one repo — for a multi-repo
+    orchestrator-root task, "has this task already started" is the wrong question for the
+    clean-tree guard; "has this task already started work in *this specific* repo" is the
+    right one. A task whose first two items target repos/a can't use that to skip the
+    clean-tree check when a third item is the task's first-ever touch of repos/b. For an
+    ordinary single-repo task (every item's repo == ".") this is equivalent to the
+    unscoped check, since there's only ever one repo in play."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS c FROM task_items WHERE task_id = ? AND repo = ? AND status != 'pending'",
+            (task_id, repo),
         ).fetchone()
     return row["c"] > 0
 
@@ -515,7 +591,11 @@ def set_task_item_baseline(task_id: str, item_id: str, baseline_commit: str) -> 
 def get_task_baseline_commit(task_id: str) -> Optional[str]:
     """The checkpoint taken right before the task's first item ever ran — since that
     checkpoint's tree equals HEAD's tree (the clean-tree guard in approve_assistant
-    guarantees this), it doubles as the anchor for a whole-task combined diff."""
+    guarantees this), it doubles as the anchor for a whole-task combined diff.
+
+    Only meaningful when the whole task lives in one repo (the ordinary case, and every
+    node-scoped task too — see get_task_baseline_commits_by_repo for the orchestrator-root
+    case where different items can target different repos)."""
     with connect() as conn:
         row = conn.execute(
             "SELECT baseline_commit FROM task_items WHERE task_id = ? AND baseline_commit IS NOT NULL "
@@ -523,6 +603,25 @@ def get_task_baseline_commit(task_id: str) -> Optional[str]:
             (task_id,),
         ).fetchone()
     return row["baseline_commit"] if row else None
+
+
+def get_task_baseline_commits_by_repo(task_id: str) -> Dict[str, str]:
+    """One baseline anchor per distinct repo the task has actually touched, each taken from
+    that repo's own first-started item — for an orchestrator-root task whose items span
+    multiple repos, there's no single coherent "whole task diff" the way a single-repo task
+    has one; each repo needs its own anchor. For an ordinary single-repo or node-scoped task
+    (every item's repo == ".") this returns exactly one entry, equivalent to
+    get_task_baseline_commit."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT repo, baseline_commit FROM task_items WHERE task_id = ? AND baseline_commit IS NOT NULL "
+            "ORDER BY sort_order",
+            (task_id,),
+        ).fetchall()
+    result: Dict[str, str] = {}
+    for row in rows:
+        result.setdefault(row["repo"] or ".", row["baseline_commit"])
+    return result
 
 
 def mark_task_completed(task_id: str) -> None:
@@ -593,14 +692,22 @@ def get_latest_run_for_task(task_id: str) -> Optional[sqlite3.Row]:
 
 
 def _command_allowlisted(conn: sqlite3.Connection, command: str) -> bool:
-    """A pattern matches either exactly, or as a prefix if it ends in '*'. No real glob
-    engine — deliberately simple, expand only if a real use case needs more."""
+    """A pattern matches: exactly, as a raw prefix if it ends in '*' (no real glob engine —
+    deliberately simple), or — the common case — as a whole-word prefix otherwise. A bare
+    pattern like "./mvnw" or "git status" is meant to mean "this command, with any
+    arguments", not "this exact invocation with zero arguments" — found live: a user added
+    "./mvnw" expecting it to cover "./mvnw test", "./mvnw clean install", etc., and it
+    didn't, because the old rule only treated a pattern as a prefix when it explicitly ended
+    in '*'. The word-boundary check (requires a following space, not just any next
+    character) still prevents "git" as a pattern from accidentally matching "github-cli" or
+    similar — but "git" itself would still match "git push --force", so this is only as
+    safe as the pattern a human actually chose to allowlist, same trust model as before."""
     for row in conn.execute("SELECT pattern FROM bash_allowlist").fetchall():
         pattern = row["pattern"]
         if pattern.endswith("*"):
             if command.startswith(pattern[:-1]):
                 return True
-        elif command == pattern:
+        elif command == pattern or command.startswith(pattern + " "):
             return True
     return False
 

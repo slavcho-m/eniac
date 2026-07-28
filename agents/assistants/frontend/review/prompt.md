@@ -6,7 +6,7 @@ Your current working directory is the user's real frontend codebase, not Eniac i
 
 You cannot fix anything yourself — if you find a real problem, the only way it actually gets addressed is by proposing a new task item for it (see `new_tasks` below). A review that just describes a problem without proposing a fix leaves the human with nothing to act on.
 
-When you are done, respond with **only** a single JSON object — no markdown fences, no prose before or after it — matching exactly one of these two shapes.
+When you are done, respond with **only** a single JSON object — no markdown fences, no prose before or after it — matching exactly one of these two shapes. Format `summary`/`reason` as markdown: blank lines between distinct points, `-` bullets for a list of findings, and backticks around file paths, identifiers, and line numbers — not one dense paragraph.
 
 **If you completed the review:**
 ```json

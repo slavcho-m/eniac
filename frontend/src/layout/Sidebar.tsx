@@ -5,7 +5,7 @@ import { Button, ConfirmDialog, NavListItem, ProjectSwitcher, SectionLabel } fro
 import { useProjects } from "@/hooks/useProjects";
 import { useProjectTasks } from "@/hooks/useProjectTasks";
 import { deleteTask } from "@/lib/api";
-import type { TaskStatus } from "@/types/api";
+import type { Task, TaskStatus } from "@/types/api";
 import { DeleteProjectDialog } from "./DeleteProjectDialog";
 import { ProjectSettingsDialog } from "./ProjectSettingsDialog";
 
@@ -29,6 +29,22 @@ const TASK_STATUS_LABEL: Record<TaskStatus, string> = {
   failed: "Failed",
 };
 
+/** Groups tasks by which node (child repo) they're scoped to, for an orchestrator
+ * project's sidebar -- one heading per node that actually has a task, plus an
+ * "Orchestrator" heading for root-scoped tasks (repo_scope null/"."). Ordinary
+ * single-repo projects never call this; their sidebar stays a single flat list. */
+function groupTasksByNode(tasks: Task[], repos: string[]): { label: string; tasks: Task[] }[] {
+  const groups: { label: string; tasks: Task[] }[] = [];
+  const rootTasks = tasks.filter((t) => !t.repo_scope || t.repo_scope === ".");
+  if (rootTasks.length > 0) groups.push({ label: "Orchestrator", tasks: rootTasks });
+  for (const repo of repos) {
+    if (repo === ".") continue;
+    const nodeTasks = tasks.filter((t) => t.repo_scope === repo);
+    if (nodeTasks.length > 0) groups.push({ label: repo.split("/").pop() ?? repo, tasks: nodeTasks });
+  }
+  return groups;
+}
+
 export function Sidebar({ refreshKey }: SidebarProps) {
   const { projectId, taskId } = useParams<{ projectId?: string; taskId?: string }>();
   const navigate = useNavigate();
@@ -41,6 +57,23 @@ export function Sidebar({ refreshKey }: SidebarProps) {
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const currentProject = projects?.find((p) => p.id === projectId);
+  const taskGroups = currentProject?.is_orchestrator
+    ? groupTasksByNode(tasks ?? [], currentProject.repos)
+    : null;
+
+  function renderTaskItem(task: Task) {
+    return (
+      <NavListItem
+        key={task.id}
+        icon={<CheckSquare size={15} strokeWidth={1.75} />}
+        label={task.feature_slug ?? task.prompt}
+        meta={TASK_STATUS_LABEL[task.status]}
+        active={task.id === taskId}
+        onClick={() => navigate(`/projects/${projectId}/tasks/${task.id}`)}
+        onDelete={() => setDeleteTarget({ id: task.id, label: task.feature_slug ?? task.prompt })}
+      />
+    );
+  }
 
   function closeDeleteDialog() {
     setDeleteTarget(null);
@@ -104,27 +137,41 @@ export function Sidebar({ refreshKey }: SidebarProps) {
             flexDirection: "column",
           }}
         >
-          <SectionLabel>Tasks</SectionLabel>
-          <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 2 }}>
-            {tasks?.length === 0 ? (
-              <p style={{ fontSize: "var(--text-hint)", color: "var(--text-tertiary)", padding: "4px 10px" }}>
-                No tasks yet.
-              </p>
-            ) : null}
-            {(tasks ?? []).map((task) => (
-              <NavListItem
-                key={task.id}
-                icon={<CheckSquare size={15} strokeWidth={1.75} />}
-                label={task.feature_slug ?? task.prompt}
-                meta={TASK_STATUS_LABEL[task.status]}
-                active={task.id === taskId}
-                onClick={() => navigate(`/projects/${projectId}/tasks/${task.id}`)}
-                onDelete={() =>
-                  setDeleteTarget({ id: task.id, label: task.feature_slug ?? task.prompt })
-                }
-              />
-            ))}
-          </div>
+          {taskGroups ? (
+            taskGroups.length === 0 ? (
+              <>
+                <SectionLabel>Tasks</SectionLabel>
+                <p
+                  style={{ fontSize: "var(--text-hint)", color: "var(--text-tertiary)", padding: "4px 10px" }}
+                >
+                  No tasks yet.
+                </p>
+              </>
+            ) : (
+              taskGroups.map((group, i) => (
+                <div key={group.label} style={{ marginTop: i > 0 ? 20 : 0 }}>
+                  <SectionLabel>{group.label}</SectionLabel>
+                  <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 2 }}>
+                    {group.tasks.map(renderTaskItem)}
+                  </div>
+                </div>
+              ))
+            )
+          ) : (
+            <>
+              <SectionLabel>Tasks</SectionLabel>
+              <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 2 }}>
+                {tasks?.length === 0 ? (
+                  <p
+                    style={{ fontSize: "var(--text-hint)", color: "var(--text-tertiary)", padding: "4px 10px" }}
+                  >
+                    No tasks yet.
+                  </p>
+                ) : null}
+                {(tasks ?? []).map(renderTaskItem)}
+              </div>
+            </>
+          )}
         </div>
       )}
 

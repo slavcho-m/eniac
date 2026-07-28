@@ -1,5 +1,14 @@
 import { useEffect, useState } from "react";
-import { Badge, Button, DiffSummaryChip, DiffViewer, PromptInput, SectionLabel, StatusBanner } from "@/components";
+import {
+  Badge,
+  Button,
+  DiffSummaryChip,
+  DiffViewer,
+  MarkdownText,
+  PromptInput,
+  SectionLabel,
+  StatusBanner,
+} from "@/components";
 import type { BadgeVariant } from "@/components";
 import { approveAssistant, getTaskDiff, reviewArtifact } from "@/lib/api";
 import { parseDiff } from "@/lib/parseDiff";
@@ -200,6 +209,11 @@ export function ExecutionView({ task, items, onRefetch, onRunStarted }: Executio
                   <span style={{ fontSize: "var(--text-hint)", color: "var(--text-tertiary)" }}>
                     {item.assistant}
                   </span>
+                  {item.repo !== "." ? (
+                    <span style={{ fontSize: "var(--text-hint)", color: "var(--text-tertiary)" }}>
+                      {item.repo}
+                    </span>
+                  ) : null}
                 </button>
               );
             })}
@@ -237,9 +251,9 @@ export function ExecutionView({ task, items, onRefetch, onRunStarted }: Executio
             ) : null}
 
             {summaryText ? (
-              <p style={{ marginTop: 8, color: "var(--text-secondary)", fontSize: "var(--text-body)" }}>
-                {summaryText}
-              </p>
+              <div style={{ marginTop: 8 }}>
+                <MarkdownText>{summaryText}</MarkdownText>
+              </div>
             ) : null}
 
             {viewMode.kind === "all" && allDiffLoading ? (

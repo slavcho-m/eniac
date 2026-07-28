@@ -27,10 +27,13 @@ MASTERMIND_ASSISTANTS = {
 }
 
 # Tool access differs by Assistant type, unlike Masterminds (uniformly read-only investigate):
-# Design/Implementation write code, Review only reads it. Analysis (DevOps) is investigation
-# only, same read-only stance as Review. Test, CI-CD Implementer, and Environment get real
-# Bash — every call is gated per-command by a PreToolUse hook (agents/hooks/bash_gate.py,
-# wired in below) that asks the Eniac backend for a decision: an instant answer if the exact
+# Design/Implementation write code, Review only reads it. Analysis (DevOps) and Discovery
+# (Architect) are investigation only, same read-only stance as Review. Decision and Diagram
+# (Architect) write real files but never need Bash — they only ever produce ADR/diagram
+# markdown, never code, config, or infra-as-code, so there's nothing to shell out to verify.
+# Test, CI-CD Implementer, and Environment get real Bash — every call is gated per-command by
+# a PreToolUse hook (agents/hooks/bash_gate.py, wired in below) that asks the Eniac backend for
+# a decision: an instant answer if the exact
 # command is already on the `bash_allowlist`, otherwise a real wait for a human to approve/
 # deny/allowlist it via the UI. This replaced an earlier all-or-nothing `bypassPermissions`
 # grant (tried for Test on 2026-07-24, reverted the same day — no per-command gate, an
@@ -45,6 +48,9 @@ ASSISTANT_TOOLS = {
     "Analysis": "Read,Grep,Glob",
     "CI-CD Implementer": "Edit,Write,Read,Grep,Glob,Bash",
     "Environment": "Edit,Write,Read,Grep,Glob,Bash",
+    "Discovery": "Read,Grep,Glob",
+    "Decision": "Edit,Write,Read,Grep,Glob",
+    "Diagram": "Edit,Write,Read,Grep,Glob",
 }
 
 # The backend's own base URL, so the PreToolUse hook (a subprocess of `claude`, not of this
@@ -96,7 +102,8 @@ _RESUME_REMINDERS = {
         'Reminder: respond with only a single JSON object -- no markdown fences, no prose '
         'before or after it -- either {"status": "needs_clarification", "questions": [...]} '
         'or {"status": "ready", "tasks": [{"slug": ..., "description": ..., "assistant": ..., '
-        '"depends_on": [...]}, ...]}.'
+        '"depends_on": [...], "repo": ...}, ...]}. "repo" is optional -- only set it if this '
+        "workspace has multiple repos and you were told which ones."
     ),
     "execution": (
         'Reminder: respond with only a single JSON object -- no markdown fences, no prose '
@@ -155,6 +162,49 @@ def _snapshot_tree(cwd: Path) -> str:
         return subprocess.run(
             ["git", "-C", str(cwd), "write-tree"], env=env, capture_output=True, text=True, check=True
         ).stdout.strip()
+
+
+_REPO_SCAN_SKIP = {"node_modules", ".venv", "venv", "vendor"}
+
+
+def discover_repos(workspace_path: Path) -> List[str]:
+    """Scans `workspace_path` for git repos, up to 2 levels deep, to detect whether it's a
+    single repo or an orchestrator directory wrapping several independently-versioned child
+    repos (e.g. `~/deploy/repos/<service>/.git` each) — the real shape found live in the
+    `vidilaptopi` project, where every git-plumbing call in this codebase was blind to
+    anything inside a child repo because it always ran `git -C workspace_path`.
+
+    Nested child repos take priority over `workspace_path`'s own `.git`, not the other way
+    around — found live: a real orchestrator directory (`vidilaptopi-deploy`) is itself
+    git-tracked (Makefile, compose files) *in addition to* wrapping several independently
+    versioned child repos under `repos/`, so treating "root has a `.git`" as automatically
+    meaning single-repo silently ignored every child underneath it. Only falls back to
+    `["."]` when no nested repos are found at all (root `.git` with no children — an
+    ordinary single-repo project, unaffected by any of this) — this deliberately no longer
+    tries to special-case a submodule checkout as "root wins"; a submodule's own directory
+    is a perfectly real, independently git-operable child repo for Eniac's purposes too.
+
+    Otherwise returns the sorted relative paths of every child directory (1-2 levels deep)
+    that has its own `.git`, skipping common heavy/hidden directories that would slow the
+    walk down for no benefit (`node_modules`, `.venv`, etc.).
+    """
+    found = []
+    for child in sorted(workspace_path.iterdir()):
+        if not child.is_dir() or child.name.startswith(".") or child.name in _REPO_SCAN_SKIP:
+            continue
+        if (child / ".git").exists():
+            found.append(child.relative_to(workspace_path).as_posix())
+            continue
+        for grandchild in sorted(child.iterdir()):
+            if not grandchild.is_dir() or grandchild.name.startswith(".") or grandchild.name in _REPO_SCAN_SKIP:
+                continue
+            if (grandchild / ".git").exists():
+                found.append(grandchild.relative_to(workspace_path).as_posix())
+    if found:
+        return found
+    if (workspace_path / ".git").exists():
+        return ["."]
+    return []
 
 
 def create_checkpoint(cwd: Path) -> str:
@@ -533,9 +583,10 @@ def _write_requirements(
 def render_tasks_md(items: List[Dict[str, Any]]) -> str:
     """Each item may optionally carry `item_id` (falls back to positional `task{i}` at
     original creation time, when items don't have one assigned yet), `deprecated`/
-    `deprecated_reason` (an approved amendment superseded it), and `depends_on` (item_ids
-    it builds on) — one renderer used both for the original write and for re-rendering an
-    amended document, not two."""
+    `deprecated_reason` (an approved amendment superseded it), `depends_on` (item_ids
+    it builds on), and `repo` (which child repo this item targets, in a multi-repo
+    workspace — omitted or "." for the ordinary single-repo case) — one renderer used
+    both for the original write and for re-rendering an amended document, not two."""
     sections = []
     for i, item in enumerate(items, start=1):
         item_id = item.get("item_id") or f"task{i}"
@@ -549,12 +600,21 @@ def render_tasks_md(items: List[Dict[str, Any]]) -> str:
         depends_on = item.get("depends_on")
         if depends_on:
             section += f"\n\n**Depends on:** {', '.join(depends_on)}"
+        repo = item.get("repo")
+        if repo and repo != ".":
+            section += f"\n\n**Repo:** {repo}"
         sections.append(section)
     return "# Tasks\n\n" + "\n\n".join(sections) + "\n"
 
 
 def _write_tasks(
-    project_id: str, task_id: str, mastermind: str, feature_slug: str, session_id: str, data: Dict[str, Any]
+    project_id: str,
+    task_id: str,
+    mastermind: str,
+    feature_slug: str,
+    session_id: str,
+    data: Dict[str, Any],
+    workspace_path: Optional[str] = None,
 ) -> None:
     # The Mastermind declares `depends_on` by slug (item_ids don't exist yet while it's
     # still composing the list) — resolved to real item_ids here, once, at creation time,
@@ -562,12 +622,17 @@ def _write_tasks(
     # dependencies from diffs after the fact. An unrecognized slug (hallucinated/typo'd) is
     # dropped rather than raising, since this is untrusted model output.
     slug_to_item_id = {item["slug"]: f"task{i}" for i, item in enumerate(data["tasks"], start=1)}
+    # Same "untrusted output, default rather than raise" stance for `repo` — an item naming
+    # a repo that doesn't actually exist in this workspace (hallucinated/stale) falls back
+    # to "." (the task's own effective workspace_path) instead of failing the whole run.
+    valid_repos = set(discover_repos(Path(workspace_path).expanduser())) if workspace_path else {"."}
     resolved_tasks = [
         {
             **item,
             "depends_on": [
                 slug_to_item_id[s] for s in item.get("depends_on", []) if s in slug_to_item_id
             ],
+            "repo": item.get("repo") if item.get("repo") in valid_repos else ".",
         }
         for item in data["tasks"]
     ]
@@ -656,9 +721,24 @@ async def start_run(
         cwd = None
         tool_flags = []
 
+    # Only the tasks stage ever needs to know about multiple repos, and only when the
+    # workspace actually has more than one — an ordinary single-repo project's tasks-stage
+    # prompt stays exactly as it always has, no new text to think about.
+    repo_guidance = ""
+    if stage == "tasks" and workspace_path:
+        repos = discover_repos(Path(workspace_path).expanduser())
+        if len(repos) > 1:
+            repo_list = ", ".join(f"`{r}`" for r in repos)
+            repo_guidance = (
+                f"\n\nThis workspace contains multiple repos: {repo_list}. Assign each task "
+                'item to exactly one via an optional "repo" field (e.g. "repo": '
+                '"repos/audit-service") — omit it (or use ".") for anything at the workspace '
+                "root itself."
+            )
+
     if resume_session_id is not None:
         reminder = _RESUME_REMINDERS.get(stage)
-        resumed_prompt = f"{prompt}\n\n---\n\n{reminder}" if reminder else prompt
+        resumed_prompt = f"{prompt}\n\n---\n\n{reminder}{repo_guidance}" if reminder else f"{prompt}{repo_guidance}"
         command = ["claude", "-r", resume_session_id, "-p", resumed_prompt, "--output-format", "json", *tool_flags]
     else:
         if stage == "context":
@@ -670,7 +750,7 @@ async def start_run(
             assert mastermind is not None
             stage_prompt = mastermind_prompt_path(mastermind).read_text()
         label = "User request" if stage == "context" else "Input"
-        combined_prompt = f"{stage_prompt}\n\n---\n\n{label}:\n{prompt}"
+        combined_prompt = f"{stage_prompt}\n\n---\n\n{label}:\n{prompt}{repo_guidance}"
         command = ["claude", "-p", combined_prompt, "--output-format", "json", *tool_flags]
 
     process = await asyncio.create_subprocess_exec(
@@ -758,7 +838,8 @@ async def start_run(
                     task = db.get_task(task_id)
                     assert task is not None
                     _write_tasks(
-                        project_id, task_id, mastermind, task["feature_slug"], session_id, data
+                        project_id, task_id, mastermind, task["feature_slug"], session_id, data,
+                        workspace_path=workspace_path,
                     )
             except Exception as exc:
                 db.mark_task_failed(task_id, f"Failed to process agent response: {exc}")

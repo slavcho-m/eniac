@@ -26,6 +26,7 @@ export { DiffViewer } from "./DiffViewer/DiffViewer";
 export type { DiffLine } from "./DiffViewer/DiffViewer";
 
 export { MarkdownPreviewCard } from "./MarkdownPreviewCard/MarkdownPreviewCard";
+export { MarkdownText } from "./MarkdownText/MarkdownText";
 export { FormField } from "./FormField/FormField";
 export { NavListItem } from "./NavListItem/NavListItem";
 export { ProjectSwitcher } from "./ProjectSwitcher/ProjectSwitcher";

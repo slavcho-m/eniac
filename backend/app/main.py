@@ -47,6 +47,7 @@ class ProjectCreate(BaseModel):
 
 class TaskCreateBody(BaseModel):
     prompt: str
+    repo_scope: Optional[str] = None
 
 
 class RespondBody(BaseModel):
@@ -98,6 +99,23 @@ class ConsultMastermindBody(BaseModel):
 @app.on_event("startup")
 def on_startup() -> None:
     db.init_db()
+
+
+def _effective_workspace_path(project, task) -> Optional[str]:
+    """The real filesystem path a task's Supervisor/Mastermind/Assistant pipeline and git
+    plumbing should operate against. For an ordinary project this is just
+    project["workspace_path"] unchanged (task["repo_scope"] is None/"." — the overwhelming
+    common case). For a node-scoped task on an orchestrator project (see runs.discover_repos),
+    task["repo_scope"] names which child repo under workspace_path this task is scoped to —
+    everywhere downstream (investigation, execution, diff, revert) then behaves exactly like
+    an ordinary single-repo project pointed at that child path, no other code changes needed."""
+    base = project["workspace_path"]
+    if not base:
+        return base
+    scope = task["repo_scope"]
+    if not scope or scope == ".":
+        return base
+    return str(Path(base).expanduser() / scope)
 
 
 def _git_status_porcelain(workspace_path: str) -> Optional[str]:
@@ -161,14 +179,29 @@ def create_project(body: ProjectCreate):
 
     db.insert_project(body.name, body.workspace_path)
     create_ppm_skeleton(body.name, body.workspace_path)
-    return {"id": body.name, "workspace_path": body.workspace_path}
+    return _serialize_project(db.get_project(body.name))
+
+
+def _discovered_repos(workspace_path: Optional[str]) -> list:
+    """Empty for a project with no workspace_path, or one whose path doesn't currently
+    exist on disk (matches the same is_dir() guard used everywhere else workspace_path is
+    touched) — never raises, since this is computed on every project read."""
+    if not workspace_path:
+        return []
+    resolved = Path(workspace_path).expanduser()
+    if not resolved.is_dir():
+        return []
+    return runs.discover_repos(resolved)
 
 
 def _serialize_project(project) -> dict:
+    repos = _discovered_repos(project["workspace_path"])
     return {
         "id": project["id"],
         "workspace_path": project["workspace_path"],
         "created_at": project["created_at"],
+        "is_orchestrator": repos != ["."] and len(repos) > 0,
+        "repos": repos,
     }
 
 
@@ -212,7 +245,7 @@ async def create_task(project_id: str, body: TaskCreateBody):
         raise HTTPException(404, f"project '{project_id}' not found")
 
     task_id = uuid.uuid4().hex
-    db.insert_task(task_id, project_id, body.prompt)
+    db.insert_task(task_id, project_id, body.prompt, repo_scope=body.repo_scope)
 
     run_id = runs.new_run_id("context", body.prompt)
     db.insert_run(run_id, task_id, "context")
@@ -237,6 +270,7 @@ def _serialize_task(task) -> dict:
         ),
         "error": task["error"],
         "has_pending_amendment": task["pending_amendment"] is not None,
+        "repo_scope": task["repo_scope"],
     }
 
 
@@ -333,7 +367,7 @@ async def respond(task_id: str, body: RespondBody):
     if stage != "context":
         project = db.get_project(task["project_id"])
         masterminds = json.loads(task["masterminds"])
-        extra = {"mastermind": masterminds[0], "workspace_path": project["workspace_path"]}
+        extra = {"mastermind": masterminds[0], "workspace_path": _effective_workspace_path(project, task)}
 
     run_id = runs.new_run_id(stage, body.answer)
     db.insert_run(run_id, task_id, stage)
@@ -429,7 +463,7 @@ async def confirm_context(task_id: str):
         raise HTTPException(409, f"Mastermind '{first_mastermind}' is not yet configured")
 
     project = db.get_project(task["project_id"])
-    workspace_path = project["workspace_path"]
+    workspace_path = _effective_workspace_path(project, task)
     if not workspace_path:
         raise HTTPException(409, "project has no workspace_path set")
     if not Path(workspace_path).expanduser().is_dir():
@@ -473,7 +507,7 @@ async def approve_requirements(task_id: str):
         raise HTTPException(409, "requirements.md missing on disk")
 
     project = db.get_project(task["project_id"])
-    workspace_path = project["workspace_path"]
+    workspace_path = _effective_workspace_path(project, task)
     if not workspace_path or not Path(workspace_path).expanduser().is_dir():
         raise HTTPException(409, "workspace_path is missing or no longer exists")
 
@@ -553,18 +587,32 @@ async def approve_assistant(task_id: str, body: Optional[ApproveAssistantBody] =
         db.set_task_item_assistant(task_id, item["item_id"], assistant)
 
     project = db.get_project(task["project_id"])
-    workspace_path = project["workspace_path"]
-    if not workspace_path or not Path(workspace_path).expanduser().is_dir():
+    task_workspace_path = _effective_workspace_path(project, task)
+    if not task_workspace_path or not Path(task_workspace_path).expanduser().is_dir():
         raise HTTPException(409, "workspace_path is missing or no longer exists")
+
+    # An item's own `repo` further narrows the task-level path — "." (the ordinary case)
+    # leaves it unchanged; a real value only ever appears on an orchestrator-root task,
+    # where different items can target different child repos under the same workspace.
+    item_repo = item["repo"] or "."
+    workspace_path = (
+        task_workspace_path
+        if item_repo == "."
+        else str(Path(task_workspace_path).expanduser() / item_repo)
+    )
+    if not Path(workspace_path).expanduser().is_dir():
+        raise HTTPException(409, f"repo '{item_repo}' no longer exists under workspace_path")
 
     git_status = _git_status_porcelain(str(Path(workspace_path).expanduser()))
     if git_status is None:
         raise HTTPException(409, "workspace_path is not a git repository")
     # Approving an item deliberately leaves its change as an uncommitted working-tree
-    # edit (Eniac never auto-commits) — so only the task's very first execution needs a
-    # clean start; later items in the same task legitimately run on top of its own prior
-    # approved-but-uncommitted progress.
-    if not db.any_task_item_started(task_id) and git_status.strip():
+    # edit (Eniac never auto-commits) — so only this item's repo's very first execution
+    # within this task needs a clean start; later items targeting the *same* repo
+    # legitimately run on top of its own prior approved-but-uncommitted progress. Scoped
+    # per repo, not task-wide, since a multi-repo task's first item touching repos/b isn't
+    # necessarily the task's first item overall.
+    if not db.any_task_item_started_for_repo(task_id, item_repo) and git_status.strip():
         raise HTTPException(409, "workspace_path has uncommitted changes; commit or stash before running an Assistant")
 
     requirements_path = (
@@ -630,7 +678,11 @@ async def review_artifact(task_id: str, body: ReviewArtifactBody):
         raise HTTPException(400, "feedback is required when rejecting")
 
     project = db.get_project(task["project_id"])
-    workspace_path = Path(project["workspace_path"]).expanduser()
+    task_workspace_path = _effective_workspace_path(project, task)
+    item_repo = item["repo"] or "."
+    workspace_path = Path(
+        task_workspace_path if item_repo == "." else str(Path(task_workspace_path).expanduser() / item_repo)
+    ).expanduser()
     # Revert to exactly the state before this item's own changes, restoring any earlier
     # items in this task that are approved but still deliberately uncommitted. Without this,
     # a reject would also discard prior approved work.
@@ -783,7 +835,7 @@ async def reject_amendment(task_id: str, body: RejectAmendmentBody):
     masterminds = json.loads(task["masterminds"])
     first_mastermind = masterminds[0]
     project = db.get_project(task["project_id"])
-    workspace_path = project["workspace_path"]
+    workspace_path = _effective_workspace_path(project, task)
 
     if amendment["source"] == "review":
         item_id = amendment["origin_item_id"]
@@ -839,7 +891,7 @@ async def consult_mastermind(task_id: str, body: ConsultMastermindBody):
     masterminds = json.loads(task["masterminds"])
     first_mastermind = masterminds[0]
     project = db.get_project(task["project_id"])
-    workspace_path = project["workspace_path"]
+    workspace_path = _effective_workspace_path(project, task)
     if not workspace_path or not Path(workspace_path).expanduser().is_dir():
         raise HTTPException(409, "workspace_path is missing or no longer exists")
 
@@ -873,6 +925,7 @@ def _serialize_task_item(item, task_id: str) -> dict:
         "blocked_reason": item["blocked_reason"],
         "deprecated_reason": item["deprecated_reason"],
         "depends_on": json.loads(item["depends_on"]) if item["depends_on"] else [],
+        "repo": item["repo"] or ".",
         "latest_run": (
             {
                 "id": latest_run["id"],
@@ -897,23 +950,38 @@ def list_task_items(task_id: str):
 def get_task_diff(task_id: str):
     """The whole task's combined diff — every approved (and currently pending-review) item's
     changes together, as opposed to a single item's isolated diff (`items[].latest_run.diff`).
-    Anchored on the first item's checkpoint rather than plain `git diff`/HEAD, since that's
-    exactly the tree the task started from (see db.get_task_baseline_commit)."""
+    One diff per distinct repo the task has touched, each anchored on that repo's own first
+    item's checkpoint (see db.get_task_baseline_commits_by_repo) rather than plain
+    `git diff`/HEAD — for the ordinary single-repo/node-scoped case this is exactly one repo,
+    same as before; an orchestrator-root task spanning multiple repos gets each repo's diff
+    concatenated (real `diff --git a/... b/...` headers per repo, which the frontend's
+    existing multi-file diff parser already splits on — no frontend change needed)."""
     task = db.get_task(task_id)
     if task is None:
         raise HTTPException(404, f"task '{task_id}' not found")
 
-    baseline_commit = db.get_task_baseline_commit(task_id)
-    if baseline_commit is None:
+    baselines_by_repo = db.get_task_baseline_commits_by_repo(task_id)
+    if not baselines_by_repo:
         return {"diff": ""}
 
     project = db.get_project(task["project_id"])
-    workspace_path = project["workspace_path"]
-    if not workspace_path or not Path(workspace_path).expanduser().is_dir():
+    task_workspace_path = _effective_workspace_path(project, task)
+    if not task_workspace_path or not Path(task_workspace_path).expanduser().is_dir():
         raise HTTPException(409, "workspace_path is missing or no longer exists")
 
-    diff = runs.working_tree_diff(Path(workspace_path).expanduser(), since=baseline_commit)
-    return {"diff": diff}
+    diffs = []
+    for repo, baseline_commit in baselines_by_repo.items():
+        repo_path = (
+            Path(task_workspace_path).expanduser()
+            if repo == "."
+            else Path(task_workspace_path).expanduser() / repo
+        )
+        if not repo_path.is_dir():
+            continue
+        repo_diff = runs.working_tree_diff(repo_path, since=baseline_commit)
+        if repo_diff:
+            diffs.append(repo_diff)
+    return {"diff": "\n".join(diffs)}
 
 
 def _serialize_bash_approval(row) -> dict:

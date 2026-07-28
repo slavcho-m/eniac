@@ -126,4 +126,57 @@ fixed set of buttons or a text field, not an open list to pick one of N
 from). Deliberately deprioritized behind building out the frontend/devops/
 architect Masterminds' Assistants — a picker for choosing between Assistants
 matters a lot less while only one Mastermind (backend) has more than one
-Assistant configured to actually pick between.
+Assistant configured to actually pick between. That reasoning is now stale:
+as of 2026-07-27 all 4 Masterminds have multiple Assistants each.
+
+## DevOps's `Analysis` Assistant can't act on what it finds
+
+**Found:** 2026-07-27, while building the task-list-amendment feature
+(Review-proposed `new_tasks` + Consult Mastermind).
+
+**What's missing:** `Analysis` (`agents/assistants/devops/analysis/prompt.md`)
+is structurally the same read-only-investigator-with-no-way-to-act problem
+that Review had before this session's fix — it can audit pipeline/infra
+config and find a real issue, but its JSON contract has no `new_tasks` field,
+so there's no way for what it finds to become an actionable task item. The
+fix built for Review (`done` shape gains an optional `new_tasks` field,
+staged as a `pending_amendment` via `runs.py`'s execution-stage completion
+handler) was scoped specifically to Review and never extended to Analysis.
+
+**Current workaround:** none — an Analysis finding just sits in its `summary`
+text with no path to becoming real follow-up work, same as Review before the
+amendment mechanism existed.
+
+**Fix, when it's time:** mechanically small, the amendment pipeline is
+already generic — add the same optional `new_tasks` field + outcome guidance
+to `agents/assistants/devops/analysis/prompt.md`'s `done` shape, and confirm
+`runs.py`'s execution-stage completion handler (already keyed on `new_tasks`
+being present and non-empty, not on which Assistant produced it) picks it up
+with no further changes needed.
+
+## Consult Mastermind amendments never touch `requirements.md`
+
+**Found:** 2026-07-27, live — Review itself caught this organically while
+testing the task-list-amendment feature: after a Consult Mastermind
+amendment changed `tasks.md`, Review ran against the resulting code and
+correctly flagged that new validation logic contradicted `requirements.md`'s
+still-current "Out of Scope: input validation" line, citing real line
+numbers, and proposed a fix task to remove the stale line.
+
+**What's missing:** a Consult Mastermind amendment (`stage = "consultation"`
+in `runs.py`) only ever produces `new_tasks`/`deprecate_item_ids` against
+`tasks.md` — there's no mechanism for it to also amend `requirements.md`
+when the scope change genuinely invalidates something requirements already
+states. `tasks.md` and `requirements.md` can drift out of sync as a result.
+
+**Current workaround:** none — relies on something (usually Review) noticing
+the drift after the fact and proposing a fix task, same as the case that
+surfaced this.
+
+**Fix, when it's time:** needs a real design pass, not a quick patch — the
+amendment shape, diffing, and approve/reject plumbing were all built around
+a single target file (`tasks.md`); extending to `requirements.md` means
+deciding whether an amendment can touch both files in one proposal, how the
+diff/approval UI shows two-file changes, and whether `requirements.md`
+changes need the same `depends_on`/deprecation-cascade treatment or a
+simpler direct-edit model.

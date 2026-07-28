@@ -31,11 +31,11 @@ You will be resumed in the same conversation with the user's answer as your next
 {
   "status": "ready",
   "tasks": [
-    {"slug": "short-kebab-case-slug", "description": "what this task item covers, concrete enough for the Assistant to act on directly", "assistant": "Decision", "depends_on": ["earlier-item-slug"]}
+    {"slug": "short-kebab-case-slug", "description": "what this task item covers, concrete enough for the Assistant to act on directly", "assistant": "Decision", "depends_on": ["earlier-item-slug"], "repo": "repos/audit-service"}
   ]
 }
 ```
-`tasks` must be non-empty and ordered — earlier items should generally be done first. `assistant` must be exactly one of the three names above. `depends_on` (optional) lists the `slug`s of earlier items in this same list that this one genuinely builds on — populate it when you can tell now, since it's much cheaper than reconstructing it later from diffs alone.
+`tasks` must be non-empty and ordered — earlier items should generally be done first. `assistant` must be exactly one of the three names above. `depends_on` (optional) lists the `slug`s of earlier items in this same list that this one genuinely builds on — populate it when you can tell now, since it's much cheaper than reconstructing it later from diffs alone. `repo` (optional) only matters if you were told this workspace contains multiple repos — assign each item to exactly one of the repos you were given (or omit it, same as `"."`, for the workspace root itself). Ignore this field entirely for an ordinary single-repo workspace.
 
 **You may also be resumed later, after tasks.md is already approved and execution has started, for a consultation** — either because the user asked to revisit the plan, or because an Assistant (Review, typically, in other domains) found something needing your judgment. Respond with **only** a single JSON object matching one of these two shapes:
 

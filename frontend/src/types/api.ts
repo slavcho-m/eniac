@@ -6,6 +6,13 @@ export interface Project {
   id: string;
   workspace_path: string | null;
   created_at: string;
+  /** True when workspace_path scans as an orchestrator directory (repos.length > 1 or a
+   * single non-root child repo) rather than a single git repo — see backend's
+   * runs.discover_repos. */
+  is_orchestrator: boolean;
+  /** Discovered child repos, relative to workspace_path. ["."] for an ordinary single-repo
+   * project (workspace_path itself is the repo), [] if no workspace_path is set. */
+  repos: string[];
 }
 
 export type TaskStatus =
@@ -36,6 +43,9 @@ export interface Task {
   pending_questions: string[] | null;
   error: string | null;
   has_pending_amendment: boolean;
+  /** Null for an ordinary/orchestrator-root task; a relative path (matching one of the
+   * owning Project's `repos`) if this task was created scoped to one child repo. */
+  repo_scope: string | null;
 }
 
 export type TaskItemStatus =
@@ -62,6 +72,10 @@ export interface TaskItem {
   blocked_reason: string | null;
   deprecated_reason: string | null;
   depends_on: string[];
+  /** Which child repo this item targets, relative to the project's workspace_path.
+   * "." for the ordinary case (single-repo project, or a node-scoped task) -- only a real
+   * value on an orchestrator-root task whose Mastermind assigned items across repos. */
+  repo: string;
   latest_run: TaskItemLatestRun | null;
 }
 

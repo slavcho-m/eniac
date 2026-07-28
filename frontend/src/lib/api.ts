@@ -79,10 +79,14 @@ export function deleteProject(
 
 // --- Tasks ---
 
-export function createTask(projectId: string, prompt: string): Promise<{ task_id: string; run_id: string }> {
+export function createTask(
+  projectId: string,
+  prompt: string,
+  repoScope?: string,
+): Promise<{ task_id: string; run_id: string }> {
   return request(`/projects/${projectId}/tasks`, {
     method: "POST",
-    body: JSON.stringify({ prompt }),
+    body: JSON.stringify({ prompt, repo_scope: repoScope }),
   });
 }
 

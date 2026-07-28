@@ -1,9 +1,11 @@
 import { useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { AppShell, PromptInput, SectionLabel } from "@/components";
+import { useProject } from "@/hooks/useProject";
 import { Sidebar } from "@/layout/Sidebar";
 import { ApiError, createTask } from "@/lib/api";
-import { LiveRunView } from "./TaskDetailPage/LiveRunView";
+import { LiveRunView } from "../TaskDetailPage/LiveRunView";
+import { RepoGraph } from "./RepoGraph";
 
 interface PendingTask {
   taskId: string;
@@ -15,14 +17,27 @@ interface PendingTask {
  * prompt is where every Task starts (per ARCHITECTURE.md §3, step 1). Everything downstream
  * of this (requirements.md, tasks.md, execution) is agent-authored / user-approved, but this
  * first submission is the one thing that's genuinely the user's to write.
+ *
+ * For an orchestrator project (workspace_path wraps multiple child repos — see
+ * runs.discover_repos), a RepoGraph is shown above the prompt: picking a node scopes the
+ * task to that one child repo (?node= query param, so it survives a refresh); leaving
+ * nothing selected creates an orchestrator-root task instead, for anything cross-cutting.
  */
 export function ProjectPage() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const { data: project } = useProject(projectId);
   const [prompt, setPrompt] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState<PendingTask | null>(null);
+
+  const selectedNode = searchParams.get("node");
+
+  function selectNode(node: string | null) {
+    setSearchParams(node ? { node } : {});
+  }
 
   async function handleSubmit() {
     if (!projectId) return;
@@ -31,7 +46,7 @@ export function ProjectPage() {
     setSubmitting(true);
     setError(null);
     try {
-      const result = await createTask(projectId, trimmed);
+      const result = await createTask(projectId, trimmed, selectedNode ?? undefined);
       setPending({ taskId: result.task_id, runId: result.run_id });
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Failed to create task.");
@@ -43,6 +58,8 @@ export function ProjectPage() {
     if (pending) void navigate(`/projects/${projectId}/tasks/${pending.taskId}`);
   }
 
+  const scopeLabel = selectedNode ? ` in ${selectedNode}` : "";
+
   return (
     <AppShell left={<Sidebar />}>
       {pending ? (
@@ -52,9 +69,21 @@ export function ProjectPage() {
           <div>
             <SectionLabel>New Task</SectionLabel>
             <p style={{ color: "var(--text-secondary)", fontSize: "var(--text-body)", marginTop: 6 }}>
-              Describe what you&apos;d like Eniac to help with in {projectId}.
+              Describe what you&apos;d like Eniac to help with{scopeLabel}.
             </p>
           </div>
+
+          {project?.is_orchestrator ? (
+            <div style={{ marginTop: 24 }}>
+              <RepoGraph
+                rootLabel={project.id}
+                repos={project.repos}
+                selected={selectedNode}
+                onSelect={selectNode}
+              />
+            </div>
+          ) : null}
+
           <div
             style={{
               marginTop: "auto",

@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { AppShell, Button, Checkbox, FormField, PageHeader, TextInput } from "@/components";
+import { AppShell, Button, Checkbox, Dialog, FormField, PageHeader, TextInput } from "@/components";
 import { Sidebar } from "@/layout/Sidebar";
-import { ApiError, createProject } from "@/lib/api";
+import { ApiError, createProject, deleteProject } from "@/lib/api";
 
 // Mirrors backend/app/main.py's NAME_RE exactly, so invalid names are caught before a
 // round trip to the server, not just after.
@@ -20,6 +20,10 @@ export function NewProjectPage() {
   const [greenfield, setGreenfield] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [orchestratorPrompt, setOrchestratorPrompt] = useState<{ id: string; repos: string[] } | null>(
+    null,
+  );
+  const [undoing, setUndoing] = useState(false);
 
   const trimmedName = name.trim();
   const nameValid = trimmedName.length > 0 && NAME_PATTERN.test(trimmedName);
@@ -30,11 +34,30 @@ export function NewProjectPage() {
     setError(null);
     setSubmitting(true);
     try {
-      await createProject(trimmedName, greenfield ? undefined : workspacePath.trim() || undefined);
-      void navigate(`/projects/${trimmedName}`);
+      const project = await createProject(
+        trimmedName,
+        greenfield ? undefined : workspacePath.trim() || undefined,
+      );
+      if (project.is_orchestrator) {
+        setOrchestratorPrompt({ id: project.id, repos: project.repos });
+        setSubmitting(false);
+      } else {
+        void navigate(`/projects/${trimmedName}`);
+      }
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Failed to create project.");
       setSubmitting(false);
+    }
+  }
+
+  async function handleUndoOrchestrator() {
+    if (!orchestratorPrompt) return;
+    setUndoing(true);
+    try {
+      await deleteProject(orchestratorPrompt.id, true);
+      setOrchestratorPrompt(null);
+    } finally {
+      setUndoing(false);
     }
   }
 
@@ -95,6 +118,41 @@ export function NewProjectPage() {
           </Button>
         </div>
       </div>
+
+      <Dialog
+        open={orchestratorPrompt !== null}
+        onClose={() => {
+          if (orchestratorPrompt) void navigate(`/projects/${orchestratorPrompt.id}`);
+        }}
+        title="Multiple repositories detected"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => void handleUndoOrchestrator()} disabled={undoing}>
+              {undoing ? "Removing…" : "Not what I meant"}
+            </Button>
+            <Button
+              variant="primary"
+              onClick={() => {
+                if (orchestratorPrompt) void navigate(`/projects/${orchestratorPrompt.id}`);
+              }}
+            >
+              Continue
+            </Button>
+          </>
+        }
+      >
+        <p style={{ margin: 0, color: "var(--text-secondary)", fontSize: "var(--text-body)" }}>
+          This looks like a workspace containing multiple repositories:{" "}
+          {orchestratorPrompt?.repos.map((repo, i) => (
+            <span key={repo}>
+              {i > 0 ? ", " : ""}
+              <code>{repo}</code>
+            </span>
+          ))}
+          . It&apos;ll be flagged as an orchestrator workspace. If that&apos;s not what you meant,
+          remove this project and pick a different path.
+        </p>
+      </Dialog>
     </AppShell>
   );
 }

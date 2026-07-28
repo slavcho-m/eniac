@@ -1,0 +1,47 @@
+.body {
+  color: var(--text-secondary);
+  font-size: var(--text-body);
+  line-height: 1.6;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+.body :global(p) {
+  margin: 0 0 8px;
+}
+
+.body :global(p):last-child {
+  margin-bottom: 0;
+}
+
+.body :global(h1),
+.body :global(h2) {
+  color: var(--text-primary);
+  font-size: var(--text-label);
+  font-weight: var(--weight-title);
+  margin: 16px 0 8px;
+}
+
+.body :global(h1):first-child,
+.body :global(h2):first-child {
+  margin-top: 0;
+}
+
+.body :global(ul) {
+  margin: 4px 0 8px;
+  padding-left: 18px;
+}
+
+.body :global(code) {
+  color: var(--info);
+  background: var(--info-bg);
+  border-radius: 3px;
+  padding: 1px 5px;
+  font-size: 0.95em;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+.body :global(strong) {
+  color: var(--text-primary);
+}
