@@ -22,11 +22,49 @@
 }
 
 .right {
+  position: relative;
   width: 340px;
   flex-shrink: 0;
+  transition: width 0.4s ease-in-out;
+}
+
+.rightCollapsed {
+  width: 0;
+}
+
+.rightInner {
+  height: 100%;
   background: var(--bg-panel);
   border-left: 1px solid var(--border-hairline);
   overflow-y: auto;
   overflow-x: hidden;
   padding: 20px 24px;
+}
+
+.rightCollapsed .rightInner {
+  display: none;
+}
+
+.rightToggle {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  transform: translate(-50%, -50%);
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 40px;
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-card);
+  background: var(--bg-card);
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+
+.rightToggle:hover {
+  color: var(--text-primary);
+  background: var(--neutral-bg);
 }

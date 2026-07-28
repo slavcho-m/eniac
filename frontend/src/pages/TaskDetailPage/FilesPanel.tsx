@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { FileListItem, MarkdownPreviewCard, SectionLabel } from "@/components";
 import type { BadgeVariant } from "@/components";
 import { useFileContent } from "@/hooks/useFileContent";
@@ -21,10 +21,21 @@ export function FilesPanel({ files }: FilesPanelProps) {
   // string: that file, explicitly picked.
   const [selectedPath, setSelectedPath] = useState<string | null | undefined>(undefined);
 
+  const smartDefaultPath =
+    files?.find((file) => file.status === "awaiting_approval")?.path ??
+    files?.find((file) => file.status === "approved")?.path;
+
+  // Re-arm the smart default whenever the file it would pick changes (e.g. a new file
+  // becomes awaiting_approval after the previous one was approved) — otherwise a prior
+  // manual selection or explicit deselection stays pinned forever and never follows the
+  // task to whatever's newly relevant.
+  useEffect(() => {
+    setSelectedPath(undefined);
+  }, [smartDefaultPath]);
+
   const activeFile: TaskFile | undefined =
     selectedPath === undefined
-      ? files?.find((file) => file.status === "awaiting_approval") ??
-        files?.find((file) => file.status === "approved")
+      ? files?.find((file) => file.path === smartDefaultPath)
       : files?.find((file) => file.path === selectedPath);
 
   const previewable = activeFile && activeFile.status !== "draft";
@@ -41,7 +52,7 @@ export function FilesPanel({ files }: FilesPanelProps) {
             meta={file.modified_at ? new Date(file.modified_at).toLocaleString() : "-"}
             badge={BADGE_BY_STATUS[file.status]}
             active={file.path === activeFile?.path}
-            onClick={() => setSelectedPath((prev) => (prev === file.path ? null : file.path))}
+            onClick={() => setSelectedPath(file.path === activeFile?.path ? null : file.path)}
           />
         ))}
       </div>

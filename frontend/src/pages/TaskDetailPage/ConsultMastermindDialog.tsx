@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Button, Dialog, Textarea } from "@/components";
+import { Button, Dialog, PromptInput } from "@/components";
 import { consultMastermind } from "@/lib/api";
 
 interface ConsultMastermindDialogProps {
@@ -35,29 +35,26 @@ export function ConsultMastermindDialog({ open, onClose, taskId, onRunStarted }:
       open={open}
       onClose={onClose}
       title="Consult Mastermind"
+      size="large"
       footer={
-        <>
-          <Button variant="secondary" onClick={onClose} disabled={submitting}>
-            Cancel
-          </Button>
-          <Button variant="primary" onClick={handleSend} disabled={submitting || !message.trim()}>
-            {submitting ? "Sending…" : "Send"}
-          </Button>
-        </>
+        <Button variant="secondary" onClick={onClose} disabled={submitting}>
+          Cancel
+        </Button>
       }
     >
-      <p style={{ margin: "0 0 12px", color: "var(--text-secondary)", fontSize: "var(--text-body)" }}>
+      <p style={{ margin: "0 0 16px", color: "var(--text-secondary)", fontSize: "var(--text-body)" }}>
         Ask the Mastermind to revisit the plan — add new task items, or flag existing ones for
         re-implementation. Nothing changes until you approve what it proposes.
       </p>
-      <Textarea
+      <PromptInput
         value={message}
-        onChange={(e) => setMessage(e.target.value)}
+        onChange={setMessage}
+        onSubmit={handleSend}
         placeholder="What needs to change?"
-        rows={5}
+        disabled={submitting}
       />
       {error ? (
-        <p style={{ color: "var(--error)", fontSize: "var(--text-body)", marginTop: 8 }}>{error}</p>
+        <p style={{ color: "var(--error)", fontSize: "var(--text-body)", marginTop: 12 }}>{error}</p>
       ) : null}
     </Dialog>
   );
