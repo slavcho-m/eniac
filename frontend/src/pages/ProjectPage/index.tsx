@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { AppShell, PromptInput, SectionLabel } from "@/components";
+import { AppShell, Button, PromptInput, SectionLabel } from "@/components";
 import { useProject } from "@/hooks/useProject";
 import { Sidebar } from "@/layout/Sidebar";
-import { ApiError, createTask } from "@/lib/api";
+import { ApiError, createTask, refreshProjectContext } from "@/lib/api";
 import { LiveRunView } from "../TaskDetailPage/LiveRunView";
 import { RepoGraph } from "./RepoGraph";
 
@@ -27,11 +27,13 @@ export function ProjectPage() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const { data: project } = useProject(projectId);
+  const { data: project, refetch: refetchProject } = useProject(projectId);
   const [prompt, setPrompt] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState<PendingTask | null>(null);
+  const [refreshRunId, setRefreshRunId] = useState<string | null>(null);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
 
   const selectedNode = searchParams.get("node");
 
@@ -58,12 +60,30 @@ export function ProjectPage() {
     if (pending) void navigate(`/projects/${projectId}/tasks/${pending.taskId}`);
   }
 
+  async function handleRefreshContext() {
+    if (!projectId) return;
+    setRefreshError(null);
+    try {
+      const { run_id } = await refreshProjectContext(projectId);
+      setRefreshRunId(run_id);
+    } catch (err) {
+      setRefreshError(err instanceof ApiError ? err.message : "Failed to start refresh.");
+    }
+  }
+
+  function handleRefreshFinished() {
+    setRefreshRunId(null);
+    refetchProject();
+  }
+
   const scopeLabel = selectedNode ? ` in ${selectedNode}` : "";
 
   return (
     <AppShell left={<Sidebar />}>
       {pending ? (
         <LiveRunView runId={pending.runId} onFinished={handleRunFinished} />
+      ) : refreshRunId ? (
+        <LiveRunView runId={refreshRunId} onFinished={handleRefreshFinished} />
       ) : (
         <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
           <div>
@@ -72,6 +92,42 @@ export function ProjectPage() {
               Describe what you&apos;d like Eniac to help with{scopeLabel}.
             </p>
           </div>
+
+          {project ? (
+            <div
+              style={{
+                marginTop: 16,
+                paddingTop: 16,
+                borderTop: "1px solid var(--border-hairline)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 12,
+              }}
+            >
+              <div>
+                <p style={{ margin: 0, color: "var(--text-secondary)", fontSize: "var(--text-body)" }}>
+                  {project.context_refreshed_at
+                    ? `Project context last refreshed ${new Date(project.context_refreshed_at).toLocaleString()}.`
+                    : "Project context never refreshed — Masterminds and Assistants have no project-wide layout/conventions reference yet."}
+                </p>
+                {project.tasks_completed_since_context_refresh >= 3 ? (
+                  <p style={{ margin: "4px 0 0", color: "var(--warning)", fontSize: "var(--text-body)" }}>
+                    {project.tasks_completed_since_context_refresh} tasks completed since the last refresh — it
+                    may be out of date.
+                  </p>
+                ) : null}
+                {refreshError ? (
+                  <p style={{ margin: "4px 0 0", color: "var(--error)", fontSize: "var(--text-body)" }}>
+                    {refreshError}
+                  </p>
+                ) : null}
+              </div>
+              <Button variant="secondary" onClick={handleRefreshContext}>
+                Refresh Context
+              </Button>
+            </div>
+          ) : null}
 
           {project?.is_orchestrator ? (
             <div style={{ marginTop: 24 }}>

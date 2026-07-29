@@ -130,7 +130,11 @@ export function Sidebar({ refreshKey }: SidebarProps) {
 
       <div style={{ marginTop: 16 }}>
         {currentProject ? (
-          <ProjectSwitcher name={currentProject.id} onSettingsClick={() => setSettingsOpen(true)} />
+          <ProjectSwitcher
+            name={currentProject.id}
+            onClick={() => navigate(`/projects/${currentProject.id}`)}
+            onSettingsClick={() => setSettingsOpen(true)}
+          />
         ) : (
           <SectionLabel>No project selected</SectionLabel>
         )}

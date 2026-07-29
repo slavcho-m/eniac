@@ -14,6 +14,10 @@ export interface Project {
   /** Discovered child repos, relative to workspace_path. ["."] for an ordinary single-repo
    * project (workspace_path itself is the repo), [] if no workspace_path is set. */
   repos: string[];
+  context_refreshed_at: string | null;
+  /** Completed tasks since context_refreshed_at (or ever, if never refreshed) — backs the
+   * "context may be stale" nudge in ProjectSettingsDialog. */
+  tasks_completed_since_context_refresh: number;
 }
 
 export type TaskStatus =
@@ -101,6 +105,18 @@ export interface TaskFile {
   path: string;
   status: TaskFileStatus;
   modified_at: string | null;
+}
+
+export type ContextFileStatus = "populated" | "empty";
+
+export interface ProjectContextFile {
+  name: string;
+  path: string;
+  status: ContextFileStatus;
+  modified_at: string | null;
+  /** "." for the project/workspace root, or a child repo's relative path for an
+   * orchestrator project's per-repo context files. */
+  repo: string;
 }
 
 export interface AssistantInfo {

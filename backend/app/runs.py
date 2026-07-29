@@ -14,6 +14,7 @@ from . import db
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SUPERVISOR_PROMPT_PATH = REPO_ROOT / "agents" / "supervisor" / "prompt.md"
+CONTEXT_INVESTIGATOR_PROMPT_PATH = REPO_ROOT / "agents" / "context-investigator" / "prompt.md"
 MASTERMINDS_DIR = REPO_ROOT / "agents" / "masterminds"
 ASSISTANTS_DIR = REPO_ROOT / "agents" / "assistants"
 
@@ -653,6 +654,7 @@ async def start_run(
     workspace_path: Optional[str] = None,
     assistant: Optional[str] = None,
     item_id: Optional[str] = None,
+    repo_scope: Optional[str] = None,
 ) -> None:
     """Spawn `claude` for this run, push its reply onto the run's queue once it exits.
 
@@ -750,7 +752,21 @@ async def start_run(
             assert mastermind is not None
             stage_prompt = mastermind_prompt_path(mastermind).read_text()
         label = "User request" if stage == "context" else "Input"
-        combined_prompt = f"{stage_prompt}\n\n---\n\n{label}:\n{prompt}{repo_guidance}"
+        # A prior project-context refresh's architecture.md/conventions.md, if any —
+        # silent no-op for a project that's never run one. Only ever populated on this
+        # fresh-call path: "tasks"/"consultation" always resume the "requirements"
+        # session in practice, and a reject/retry always resumes its own item's prior
+        # execution session (see main.py's call sites), so injecting once here reaches
+        # every one of these stages for free via that session's own continuity — the
+        # Assistants under "execution" get it exactly the same way the Masterminds do,
+        # just scoped by `repo_scope` being the task *item's* own repo (passed by the
+        # caller) rather than the task's.
+        context_block = (
+            _project_context_block(project_id, repo_scope, mastermind)
+            if stage in ("requirements", "tasks", "consultation", "execution")
+            else ""
+        )
+        combined_prompt = f"{context_block}{stage_prompt}\n\n---\n\n{label}:\n{prompt}{repo_guidance}"
         command = ["claude", "-p", combined_prompt, "--output-format", "json", *tool_flags]
 
     process = await asyncio.create_subprocess_exec(
@@ -954,3 +970,159 @@ async def stream_run(run_id: str) -> AsyncIterator[str]:
             del _queues[run_id]
             break
         yield item
+
+
+# --- Project context refresh ---
+# One-time-per-project (not per-feature) investigation producing architecture.md/
+# conventions.md reference material every Mastermind's own investigation can draw on
+# instead of re-deriving the same basics every task. Not tied to any task — reuses the
+# run-streaming queue (register_run/_queues/stream_run above) without a `runs` table
+# row, since nothing here needs replay/diff/task-linkage the way a task-scoped run does.
+
+
+def _project_context_block(project_id: str, repo_scope: Optional[str], mastermind: str) -> str:
+    """Whatever architecture.md/conventions.md a prior context refresh produced for this
+    scope (workspace root, or a child repo — a node-scoped task's own repo for a
+    Mastermind call, or a task item's own repo for an Assistant/execution call),
+    formatted as extra context to prepend to the prompt. Empty string — a true no-op,
+    not even an empty heading — when nothing's been generated yet."""
+    if repo_scope and repo_scope != ".":
+        target_dir = db.PPM_ROOT / project_id / "repos" / repo_scope
+    else:
+        target_dir = db.PPM_ROOT / project_id
+
+    sections = []
+    architecture_path = target_dir / "architecture.md"
+    if architecture_path.is_file() and architecture_path.stat().st_size > 0:
+        sections.append(architecture_path.read_text())
+    conventions_path = target_dir / mastermind / "conventions.md"
+    if conventions_path.is_file() and conventions_path.stat().st_size > 0:
+        sections.append(conventions_path.read_text())
+    if not sections:
+        return ""
+    return "## Known Project Context\n\n" + "\n\n".join(sections) + "\n\n---\n\n"
+
+
+def _parse_context_investigator_json(result_text: str) -> Dict[str, Any]:
+    data = json.loads(_strip_fences(result_text))
+    if data.get("status") != "done":
+        raise ValueError(f"unknown status: {data.get('status')!r}")
+    required = {"layout", "dependencies", "conventions"}
+    missing = required - data.keys()
+    if missing:
+        raise ValueError(f"missing keys: {missing}")
+    return data
+
+
+def _render_architecture_md(data: Dict[str, Any]) -> str:
+    modules = data["layout"].get("modules") or []
+    module_lines = "\n".join(f"- `{m['path']}` — {m['description']}" for m in modules) or "None identified."
+
+    deps = data.get("dependencies") or []
+    dep_lines = []
+    for d in deps:
+        version = f" ({d['version']})" if d.get("version") else ""
+        dep_lines.append(f"- `{d['name']}`{version} — {d['kind']}, {d['ecosystem']}")
+    dep_text = "\n".join(dep_lines) or "None identified."
+
+    notes = data.get("notes") or []
+    note_lines = "\n".join(f"- {n}" for n in notes) or "None."
+
+    return f"""# Architecture
+
+## Layout
+{data['layout']['summary']}
+
+### Modules
+{module_lines}
+
+## Dependencies
+{dep_text}
+
+## Notes
+{note_lines}
+"""
+
+
+def _render_conventions_md(domain: str, conventions_text: str) -> str:
+    return f"# {domain.capitalize()} Conventions\n\n{conventions_text}\n"
+
+
+def _write_context_files(target_dir: Path, data: Dict[str, Any]) -> None:
+    target_dir.mkdir(parents=True, exist_ok=True)
+    (target_dir / "architecture.md").write_text(_render_architecture_md(data))
+    (target_dir / "architecture.json").write_text(json.dumps(data, indent=2))
+    for domain, text in data["conventions"].items():
+        if domain not in KNOWN_MASTERMINDS or not text:
+            continue
+        domain_dir = target_dir / domain
+        domain_dir.mkdir(parents=True, exist_ok=True)
+        (domain_dir / "conventions.md").write_text(_render_conventions_md(domain, text))
+
+
+async def _run_claude_once(prompt: str, cwd: Path, tool_flags: List[str]) -> "tuple[Optional[int], str]":
+    """Spawns `claude -p <prompt> --output-format json <tool_flags>`, waits for exit,
+    returns (returncode, combined stdout+stderr transcript). Same isolation stance as
+    every other investigation stage in `start_run` — read-only tools, --safe-mode."""
+    command = ["claude", "-p", prompt, "--output-format", "json", *tool_flags]
+    process = await asyncio.create_subprocess_exec(
+        *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, cwd=cwd
+    )
+    transcript_lines = []
+    assert process.stdout is not None
+    async for line in process.stdout:
+        transcript_lines.append(line.decode(errors="replace"))
+    await process.wait()
+    return process.returncode, "".join(transcript_lines)
+
+
+async def start_context_refresh(run_id: str, project_id: str, workspace_path: str) -> None:
+    """Investigates the real codebase once at the workspace root (aware of any child
+    repos) and once per discovered child repo (`discover_repos`, same detection already
+    used for multi-repo tasks), writing architecture.md/architecture.json and per-domain
+    conventions.md into the project's PPM directory. One target failing doesn't abort the
+    others; `projects.context_refreshed_at` is set if at least one target succeeded.
+    """
+    queue = _queues.setdefault(run_id, asyncio.Queue())
+    base = Path(workspace_path).expanduser()
+    repos = discover_repos(base)
+    is_orchestrator = repos not in ([], ["."])
+
+    base_prompt = CONTEXT_INVESTIGATOR_PROMPT_PATH.read_text()
+    root_prompt = base_prompt
+    if is_orchestrator:
+        repo_list = ", ".join(f"`{r}`" for r in repos)
+        root_prompt += (
+            f"\n\n---\n\nThis is the orchestrator root of a multi-repo workspace containing: "
+            f"{repo_list}. Describe the overall layout and how these repos relate to each "
+            "other — each child repo is investigated separately, so you don't need to go "
+            "deep inside any of them."
+        )
+
+    targets = [("workspace root", base, db.PPM_ROOT / project_id, root_prompt)]
+    if is_orchestrator:
+        for repo in repos:
+            targets.append((repo, base / repo, db.PPM_ROOT / project_id / "repos" / repo, base_prompt))
+
+    succeeded = False
+    errors: List[str] = []
+    for label, cwd, target_dir, prompt_text in targets:
+        await queue.put(f"Investigating {label}…\n")
+        returncode, transcript = await _run_claude_once(prompt_text, cwd, ["--tools", "Read,Grep,Glob", "--safe-mode"])
+        if returncode != 0:
+            errors.append(f"{label}: {_process_failure_reason(returncode, transcript)}")
+            continue
+        try:
+            wrapper = json.loads(transcript)
+            data = _parse_context_investigator_json(wrapper["result"])
+            _write_context_files(target_dir, data)
+            succeeded = True
+            await queue.put(f"{label}: done.\n")
+        except Exception as exc:
+            errors.append(f"{label}: failed to process agent response: {exc}")
+
+    if succeeded:
+        db.set_project_context_refreshed(project_id)
+    if errors:
+        await queue.put("Some targets failed:\n" + "\n".join(f"- {e}" for e in errors) + "\n")
+    await queue.put(_DONE)  # type: ignore[arg-type]

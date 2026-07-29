@@ -87,7 +87,7 @@ export function TaskDetailPage() {
   return (
     <AppShell
       left={<Sidebar refreshKey={task?.status} />}
-      right={taskId ? <FilesPanel files={files} /> : null}
+      right={taskId ? <FilesPanel files={files} projectId={task?.project_id} /> : null}
     >
       {loading && !task ? <p style={{ color: "var(--text-secondary)" }}>Loading…</p> : null}
       {error ? <p style={{ color: "var(--error)" }}>{error.message}</p> : null}

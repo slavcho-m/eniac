@@ -149,7 +149,7 @@ def init_db() -> None:
         # ponytail: no migration framework (v1 decision, see ARCHITECTURE.md §5) —
         # existing dev DBs predating these columns get them added here; a fresh
         # DB already has them from CREATE TABLE above, so "duplicate column" is expected.
-        for column in ("description TEXT",):
+        for column in ("description TEXT", "context_refreshed_at TEXT"):
             try:
                 conn.execute(f"ALTER TABLE projects ADD COLUMN {column}")
             except sqlite3.OperationalError:
@@ -237,6 +237,25 @@ def update_project_workspace_path(project_id: str, workspace_path: Optional[str]
         conn.execute(
             "UPDATE projects SET workspace_path = ? WHERE id = ?", (workspace_path, project_id)
         )
+
+
+def set_project_context_refreshed(project_id: str) -> None:
+    with connect() as conn:
+        conn.execute(
+            "UPDATE projects SET context_refreshed_at = ? WHERE id = ?", (now(), project_id)
+        )
+
+
+def count_tasks_completed_since(project_id: str, since: Optional[str]) -> int:
+    with connect() as conn:
+        if since is None:
+            return conn.execute(
+                "SELECT COUNT(*) FROM tasks WHERE project_id = ? AND status = 'completed'", (project_id,)
+            ).fetchone()[0]
+        return conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE project_id = ? AND status = 'completed' AND created_at > ?",
+            (project_id, since),
+        ).fetchone()[0]
 
 
 def delete_project(project_id: str) -> None:

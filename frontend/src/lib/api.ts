@@ -4,6 +4,7 @@ import type {
   BashApproval,
   Mastermind,
   Project,
+  ProjectContextFile,
   Run,
   Task,
   TaskAmendment,
@@ -72,6 +73,18 @@ export function updateProject(projectId: string, workspacePath: string | null): 
     method: "PATCH",
     body: JSON.stringify({ workspace_path: workspacePath }),
   });
+}
+
+export function refreshProjectContext(projectId: string): Promise<{ run_id: string }> {
+  return request(`/projects/${projectId}/refresh-context`, { method: "POST" });
+}
+
+export function getProjectContextFiles(projectId: string): Promise<ProjectContextFile[]> {
+  return request(`/projects/${projectId}/context-files`);
+}
+
+export function deleteProjectContextFile(projectId: string, path: string): Promise<{ path: string; deleted: true }> {
+  return request(`/projects/${projectId}/context-files?path=${encodeURIComponent(path)}`, { method: "DELETE" });
 }
 
 export function deleteProject(

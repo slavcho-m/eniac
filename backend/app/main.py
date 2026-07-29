@@ -158,10 +158,9 @@ def create_ppm_skeleton(name: str, workspace_path: Optional[str], description: O
     """§4.2: POST /projects owns creating the project's PPM skeleton."""
     project_dir = db.PPM_ROOT / name
     (project_dir / "contracts").mkdir(parents=True, exist_ok=True)
-    for domain in ("frontend", "backend", "devops", "architecture"):
+    for domain in ("frontend", "backend", "devops", "architect"):
         (project_dir / domain / "features").mkdir(parents=True, exist_ok=True)
         (project_dir / domain / "conventions.md").touch()
-    (project_dir / "conventions.md").touch()
     (project_dir / "architecture.md").touch()
     (project_dir / "project.json").write_text(
         json.dumps(
@@ -209,6 +208,10 @@ def _serialize_project(project) -> dict:
         "created_at": project["created_at"],
         "is_orchestrator": repos != ["."] and len(repos) > 0,
         "repos": repos,
+        "context_refreshed_at": project["context_refreshed_at"],
+        "tasks_completed_since_context_refresh": db.count_tasks_completed_since(
+            project["id"], project["context_refreshed_at"]
+        ),
     }
 
 
@@ -231,6 +234,102 @@ def update_project(project_id: str, body: ProjectUpdate):
         raise HTTPException(404, f"project '{project_id}' not found")
     db.update_project_workspace_path(project_id, body.workspace_path)
     return _serialize_project(db.get_project(project_id))
+
+
+@app.post("/projects/{project_id}/refresh-context")
+async def refresh_project_context(project_id: str):
+    project = db.get_project(project_id)
+    if project is None:
+        raise HTTPException(404, f"project '{project_id}' not found")
+    workspace_path = project["workspace_path"]
+    if not workspace_path:
+        raise HTTPException(409, "project has no workspace_path set")
+    if not Path(workspace_path).expanduser().is_dir():
+        raise HTTPException(409, f"workspace_path '{workspace_path}' does not exist")
+
+    run_id = runs.new_run_id("project-context", project_id)
+    _fire_and_forget(run_id, runs.start_context_refresh(run_id, project_id, workspace_path))
+    return {"run_id": run_id}
+
+
+def _context_file_entry(name: str, path: Path, repo: str) -> dict:
+    """Unlike CANONICAL_FEATURE_FILES' context.md/requirements.md/tasks.md (only ever
+    written once actually generated), architecture.md/conventions.md are pre-touched
+    empty at project-skeleton time — so `is_file()` alone can't tell "never refreshed"
+    from "refreshed but genuinely empty." `populated` (non-zero size) is the real signal;
+    `modified_at` stays None until then so it reads as "never refreshed," not the touch
+    time of an empty placeholder."""
+    exists = path.is_file()
+    populated = exists and path.stat().st_size > 0
+    return {
+        "name": name,
+        "path": str(path.relative_to(db.PPM_ROOT)),
+        "status": "populated" if populated else "empty",
+        "modified_at": (
+            datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat() if populated else None
+        ),
+        "repo": repo,
+    }
+
+
+@app.get("/projects/{project_id}/context-files")
+def get_project_context_files(project_id: str):
+    project = db.get_project(project_id)
+    if project is None:
+        raise HTTPException(404, f"project '{project_id}' not found")
+
+    def entries_for(base_dir: Path, repo: str) -> list:
+        by_domain = {
+            domain: _context_file_entry("Conventions", base_dir / domain / "conventions.md", repo)
+            for domain in sorted(runs.KNOWN_MASTERMINDS)
+        }
+        # "Conventions" alone reads fine when only one domain has real content at this
+        # location (the common case) — but two populated conventions files at the same
+        # level are otherwise indistinguishable in the list, so only then does the domain
+        # name earn its place back in the label.
+        populated_domains = [d for d, entry in by_domain.items() if entry["status"] == "populated"]
+        if len(populated_domains) > 1:
+            domain_labels = {"frontend": "Frontend", "backend": "Backend", "devops": "DevOps", "architect": "Architect"}
+            for domain, entry in by_domain.items():
+                entry["name"] = f"{domain_labels[domain]} Conventions"
+        return [_context_file_entry("Architecture", base_dir / "architecture.md", repo), *by_domain.values()]
+
+    root_dir = db.PPM_ROOT / project_id
+    files = entries_for(root_dir, ".")
+    for repo in _discovered_repos(project["workspace_path"]):
+        if repo == ".":
+            continue
+        files.extend(entries_for(root_dir / "repos" / repo, repo))
+    # A domain that never got real content just isn't shown — an empty placeholder row
+    # (from create_ppm_skeleton's pre-touch) is noise, not information.
+    return [f for f in files if f["status"] == "populated"]
+
+
+_CONTEXT_FILENAMES = {"architecture.md", "conventions.md"}
+
+
+@app.delete("/projects/{project_id}/context-files")
+def delete_project_context_file(project_id: str, path: str):
+    """Deletes one context file so a stale/wrong entry can be cleared without waiting on
+    (or fighting) the next refresh — refresh only ever overwrites a domain that's present
+    in its response, it never removes one that's dropped out, so this is the only way to
+    actually get rid of a conventions.md that's no longer relevant."""
+    project = db.get_project(project_id)
+    if project is None:
+        raise HTTPException(404, f"project '{project_id}' not found")
+
+    resolved = _resolve_ppm_path(path)
+    if resolved.name not in _CONTEXT_FILENAMES:
+        raise HTTPException(400, f"'{path}' is not a context file")
+    if not resolved.is_relative_to((db.PPM_ROOT / project_id).resolve()):
+        raise HTTPException(400, "path does not belong to this project")
+    if not resolved.is_file():
+        raise HTTPException(404, f"file '{path}' not found")
+
+    resolved.unlink()
+    if resolved.name == "architecture.md":
+        (resolved.parent / "architecture.json").unlink(missing_ok=True)
+    return {"path": path, "deleted": True}
 
 
 @app.delete("/projects/{project_id}")
@@ -492,6 +591,7 @@ async def confirm_context(task_id: str):
             "requirements",
             mastermind=first_mastermind,
             workspace_path=workspace_path,
+            repo_scope=task["repo_scope"],
         ),
     )
 
@@ -654,6 +754,7 @@ async def approve_assistant(task_id: str, body: Optional[ApproveAssistantBody] =
             assistant=assistant,
             workspace_path=workspace_path,
             item_id=item["item_id"],
+            repo_scope=item_repo,
         ),
     )
 

@@ -1,20 +1,29 @@
 .item {
   display: flex;
   align-items: center;
-  gap: 10px;
   width: 100%;
-  padding: 10px 12px;
-  background: none;
   border: 1px solid transparent;
   border-radius: var(--radius-card);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
 }
 
 .active {
   border-color: var(--warning-border);
   background: var(--warning-bg);
+}
+
+.main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  padding: 10px 12px;
+  background: none;
+  border: none;
+  font: inherit;
+  text-align: left;
+  color: inherit;
+  cursor: pointer;
 }
 
 .icon {
@@ -42,4 +51,25 @@
 .meta {
   font-size: var(--text-hint);
   color: var(--text-tertiary);
+}
+
+.delete {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin-right: 8px;
+  border: none;
+  background: none;
+  border-radius: var(--radius-card);
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+
+.delete:hover {
+  color: var(--error);
+  background: var(--error-bg);
 }

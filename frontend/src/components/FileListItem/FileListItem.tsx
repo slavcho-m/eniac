@@ -1,4 +1,4 @@
-import { File, Folder } from "lucide-react";
+import { File, Folder, Trash2 } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { Badge, type BadgeVariant } from "../Badge/Badge";
 import styles from "./FileListItem.module.css";
@@ -10,6 +10,7 @@ interface FileListItemProps {
   kind?: "file" | "folder";
   active?: boolean;
   onClick?: () => void;
+  onDelete?: () => void;
 }
 
 export function FileListItem({
@@ -19,6 +20,7 @@ export function FileListItem({
   kind = "file",
   active = false,
   onClick,
+  onDelete,
 }: FileListItemProps) {
   const Icon = kind === "folder" ? Folder : File;
   const content = (
@@ -35,13 +37,35 @@ export function FileListItem({
   );
 
   // Only interactive rows are real <button>s — a row with no onClick (e.g. an empty
-  // folder) has nothing to do, so it stays a plain, non-focusable <div>.
-  if (onClick) {
-    return (
-      <button type="button" className={cn(styles.item, active && styles.active)} onClick={onClick}>
-        {content}
-      </button>
-    );
+  // folder) has nothing to do, so it stays a plain, non-focusable <div>. onDelete needs
+  // its own sibling <button> (not nested inside the main one, invalid HTML) — matches
+  // NavListItem's same wrapper-div + main-button + delete-button structure.
+  const main = onClick ? (
+    <button type="button" className={styles.main} onClick={onClick}>
+      {content}
+    </button>
+  ) : (
+    <div className={styles.main}>{content}</div>
+  );
+
+  if (!onDelete) {
+    return <div className={cn(styles.item, active && styles.active)}>{main}</div>;
   }
-  return <div className={cn(styles.item, active && styles.active)}>{content}</div>;
+
+  return (
+    <div className={cn(styles.item, active && styles.active)}>
+      {main}
+      <button
+        type="button"
+        className={styles.delete}
+        onClick={(e) => {
+          e.stopPropagation();
+          onDelete();
+        }}
+        aria-label={`Delete ${name}`}
+      >
+        <Trash2 size={13} strokeWidth={1.75} />
+      </button>
+    </div>
+  );
 }
