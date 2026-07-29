@@ -4,6 +4,7 @@ import { AppShell, Button, PromptInput, SectionLabel } from "@/components";
 import { useProject } from "@/hooks/useProject";
 import { Sidebar } from "@/layout/Sidebar";
 import { ApiError, createTask, refreshProjectContext } from "@/lib/api";
+import { FilesPanel } from "../TaskDetailPage/FilesPanel";
 import { LiveRunView } from "../TaskDetailPage/LiveRunView";
 import { RepoGraph } from "./RepoGraph";
 
@@ -79,7 +80,7 @@ export function ProjectPage() {
   const scopeLabel = selectedNode ? ` in ${selectedNode}` : "";
 
   return (
-    <AppShell left={<Sidebar />}>
+    <AppShell left={<Sidebar />} right={<FilesPanel projectId={projectId} />} defaultRightCollapsed>
       {pending ? (
         <LiveRunView runId={pending.runId} onFinished={handleRunFinished} />
       ) : refreshRunId ? (

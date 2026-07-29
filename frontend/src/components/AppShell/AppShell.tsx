@@ -6,11 +6,14 @@ import styles from "./AppShell.module.css";
 interface AppShellProps {
   left: ReactNode;
   right?: ReactNode;
+  /** TaskDetailPage wants the files panel open by default; ProjectPage (home) wants it
+   * out of the way of the prompt until the user asks for it. */
+  defaultRightCollapsed?: boolean;
   children: ReactNode;
 }
 
-export function AppShell({ left, right, children }: AppShellProps) {
-  const [rightCollapsed, setRightCollapsed] = useState(false);
+export function AppShell({ left, right, defaultRightCollapsed = false, children }: AppShellProps) {
+  const [rightCollapsed, setRightCollapsed] = useState(defaultRightCollapsed);
 
   return (
     <div className={styles.shell}>
