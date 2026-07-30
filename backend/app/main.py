@@ -739,6 +739,16 @@ async def approve_assistant(task_id: str, body: Optional[ApproveAssistantBody] =
     baseline_commit = runs.create_checkpoint(Path(workspace_path).expanduser())
     db.set_task_item_baseline(task_id, item["item_id"], baseline_commit)
 
+    # Re-validated against *this* assistant's catalog, not just carried over blindly — the
+    # Mastermind picked these skills for whichever assistant it originally recommended, but
+    # an override (see `assistant` above) can point this run at a different one, whose
+    # catalog may not include the same names at all.
+    item_skills = [
+        s
+        for s in (json.loads(item["skills"]) if item["skills"] else [])
+        if s in runs.ASSISTANT_SKILLS.get((first_mastermind, assistant), {})
+    ]
+
     run_id = runs.new_run_id("execution", f"{task['feature_slug']}-{item['item_id']}")
     db.insert_run(run_id, task_id, "execution", item_id=item["item_id"])
     db.set_task_item_status(task_id, item["item_id"], "in_progress")
@@ -755,6 +765,7 @@ async def approve_assistant(task_id: str, body: Optional[ApproveAssistantBody] =
             workspace_path=workspace_path,
             item_id=item["item_id"],
             repo_scope=item_repo,
+            skills=item_skills,
         ),
     )
 
@@ -855,6 +866,7 @@ def _amendment_render_items(task_id: str, amendment: dict) -> list:
                 "description": item["description"],
                 "assistant": item["assistant"],
                 "depends_on": json.loads(item["depends_on"]) if item["depends_on"] else [],
+                "skills": json.loads(item["skills"]) if item["skills"] else [],
                 "deprecated": is_deprecated,
                 "deprecated_reason": item["deprecated_reason"] or (reasoning if is_deprecated else None),
             }
@@ -1035,6 +1047,7 @@ def _serialize_task_item(item, task_id: str) -> dict:
         "deprecated_reason": item["deprecated_reason"],
         "depends_on": json.loads(item["depends_on"]) if item["depends_on"] else [],
         "repo": item["repo"] or ".",
+        "skills": json.loads(item["skills"]) if item["skills"] else [],
         "latest_run": (
             {
                 "id": latest_run["id"],

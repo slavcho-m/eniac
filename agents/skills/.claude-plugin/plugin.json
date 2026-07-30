@@ -1,0 +1,5 @@
+{
+  "name": "eniac-assistant-skills",
+  "version": "0.1.0",
+  "description": "Domain-craft skills for Eniac's execution-stage Assistants. Not autonomously triggered — Eniac's backend decides which skill(s) apply to a given task item and invokes them explicitly via /skill-name."
+}

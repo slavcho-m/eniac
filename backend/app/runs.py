@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 import uuid
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from . import db
 
@@ -53,6 +53,124 @@ ASSISTANT_TOOLS = {
     "Decision": "Edit,Write,Read,Grep,Glob",
     "Diagram": "Edit,Write,Read,Grep,Glob",
 }
+
+# Skills only ever apply to the execution stage — it's the only stage that skips
+# --safe-mode, and --safe-mode disables skills entirely regardless of source (confirmed
+# live: a --plugin-dir-loaded skill was completely invisible under --safe-mode). Keyed by
+# (mastermind, assistant), not assistant name alone, since assistant names are shared
+# across domains (e.g. "Implementation" exists for both frontend and backend) but the
+# skills that make sense for each are not.
+#
+# This is a catalog (skill_name -> short one-line description), not an auto-apply list —
+# which of a domain's available skills actually applies to a given task item is decided by
+# the Mastermind itself, per item, when it writes tasks.md (same place it already decides
+# `assistant`/`repo`/`depends_on`) — it has real investigation context a static rule or a
+# separate selection step wouldn't. The description here is a short catalog blurb, not
+# parsed out of the SKILL.md frontmatter (a real YAML parser is more than this needs).
+# `_write_tasks` validates the Mastermind's picks against this catalog, defaulting an
+# invented name to "not applied" rather than raising — the model never gets to invoke a
+# skill Eniac didn't actually register.
+#
+# Not invoked via the CLI's own `/skill-name` mechanism: confirmed live that only the
+# *first* `/skill-name` in a message is actually invoked — every subsequent one on its own
+# line is read back as plain text, not a second invocation (the model's own words: "the
+# second /name text was passed as an argument, not a command"). Doesn't compose. Instead,
+# each selected skill's SKILL.md content is read directly and prepended as plain
+# instructional text — the same proven mechanism _project_context_block already uses for
+# architecture.md/conventions.md. Composes trivially for any number of skills, since it's
+# just concatenating files, not chaining an undocumented CLI behavior.
+_FRONTEND_CODE_WRITING = (
+    "Framework-agnostic frontend craft guidance -- accessibility, component/state "
+    "boundaries, styling discipline, and the loading/empty/error states real UI "
+    "needs beyond the happy path."
+)
+_BACKEND_CODE_WRITING = (
+    "Framework-agnostic backend craft guidance -- API/interface shape, error handling, "
+    "data and persistence discipline, and security boundaries."
+)
+_CODE_REVIEW_CRAFT = (
+    "What a good review actually checks, how to cite findings with real evidence, "
+    "severity triage, and when a finding is worth proposing as a new task item."
+)
+_TEST_WRITING_CRAFT = (
+    "Matching existing test conventions, testing behavior over implementation, real "
+    "edge-case coverage, and confirming tests actually pass rather than assuming."
+)
+
+# One catalog entry per (mastermind, assistant) pair that has a skill today. Design and
+# Implementation share the same code-writing skill per domain (same underlying craft --
+# structure vs. full logic, not a different concern), same for Review and Test across
+# backend/frontend (the craft of reviewing/testing well doesn't depend on which codebase
+# it's aimed at, only the target does, and that's already supplied via requirements.md).
+ASSISTANT_SKILLS: Dict[Tuple[str, str], Dict[str, str]] = {
+    ("frontend", "Design"): {"frontend-code-writing": _FRONTEND_CODE_WRITING},
+    ("frontend", "Implementation"): {"frontend-code-writing": _FRONTEND_CODE_WRITING},
+    ("frontend", "Review"): {"code-review-craft": _CODE_REVIEW_CRAFT},
+    ("frontend", "Test"): {"test-writing-craft": _TEST_WRITING_CRAFT},
+    ("backend", "Design"): {"backend-code-writing": _BACKEND_CODE_WRITING},
+    ("backend", "Implementation"): {"backend-code-writing": _BACKEND_CODE_WRITING},
+    ("backend", "Review"): {"code-review-craft": _CODE_REVIEW_CRAFT},
+    ("backend", "Test"): {"test-writing-craft": _TEST_WRITING_CRAFT},
+    ("devops", "Analysis"): {
+        "devops-analysis-craft": (
+            "What makes an infra/CI/CD finding decision-ready, prioritizing by real "
+            "impact, and flagging security/credential issues even outside task scope."
+        ),
+    },
+    ("devops", "CI-CD Implementer"): {
+        "cicd-pipeline-craft": (
+            "Fail-fast pipeline design, least-privilege credential scoping, idempotency, "
+            "and the boundary between verifying a change and actually deploying it."
+        ),
+    },
+    ("devops", "Environment"): {
+        "environment-setup-craft": (
+            "Complete and reproducible local dev setup -- env-var documentation, never "
+            "leaking a real secret into a committed file, keeping docs and scripts in sync."
+        ),
+    },
+    ("architect", "Discovery"): {
+        "architecture-discovery-craft": (
+            "Grounding every claim in real evidence, scoping to the task, and reporting "
+            "fact -- not recommendation -- including explicitly noting what's absent."
+        ),
+    },
+    ("architect", "Decision"): {
+        "adr-writing-craft": (
+            "Real alternatives (not strawmen), honest consequences (not just benefits), "
+            "and writing context self-contained enough to outlive today's conversation."
+        ),
+    },
+    ("architect", "Diagram"): {
+        "diagram-clarity-craft": (
+            "Choosing the right diagram type for the content, using real names grounded "
+            "in the actual code, and staying scoped to what the diagram is actually for."
+        ),
+    },
+}
+SKILLS_DIR = REPO_ROOT / "agents" / "skills" / "skills"
+
+
+def _strip_frontmatter(text: str) -> str:
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        if end != -1:
+            return text[end + 4 :].lstrip("\n")
+    return text
+
+
+def _skills_block(skill_names: List[str]) -> str:
+    """Pure content-reader — no catalog lookup here. The decision of which skills apply
+    already happened once, at tasks.md creation time, and is stored per item; this just
+    plays back whatever was decided, the same way execution already does for `repo`."""
+    sections = []
+    for name in skill_names:
+        skill_path = SKILLS_DIR / name / "SKILL.md"
+        if skill_path.is_file():
+            sections.append(_strip_frontmatter(skill_path.read_text()))
+    if not sections:
+        return ""
+    return "## Relevant Skills\n\n" + "\n\n".join(sections) + "\n\n---\n\n"
 
 # The backend's own base URL, so the PreToolUse hook (a subprocess of `claude`, not of this
 # process) knows where to POST/poll approval requests. No prior "my own base URL" concept
@@ -103,8 +221,10 @@ _RESUME_REMINDERS = {
         'Reminder: respond with only a single JSON object -- no markdown fences, no prose '
         'before or after it -- either {"status": "needs_clarification", "questions": [...]} '
         'or {"status": "ready", "tasks": [{"slug": ..., "description": ..., "assistant": ..., '
-        '"depends_on": [...], "repo": ...}, ...]}. "repo" is optional -- only set it if this '
-        "workspace has multiple repos and you were told which ones."
+        '"depends_on": [...], "repo": ..., "skills": [...]}, ...]}. "repo" is optional -- only '
+        'set it if this workspace has multiple repos and you were told which ones. "skills" is '
+        "optional -- only set it to names from whatever skills list you were given for this "
+        "domain, never an invented name."
     ),
     "execution": (
         'Reminder: respond with only a single JSON object -- no markdown fences, no prose '
@@ -585,8 +705,9 @@ def render_tasks_md(items: List[Dict[str, Any]]) -> str:
     """Each item may optionally carry `item_id` (falls back to positional `task{i}` at
     original creation time, when items don't have one assigned yet), `deprecated`/
     `deprecated_reason` (an approved amendment superseded it), `depends_on` (item_ids
-    it builds on), and `repo` (which child repo this item targets, in a multi-repo
-    workspace — omitted or "." for the ordinary single-repo case) — one renderer used
+    it builds on), `repo` (which child repo this item targets, in a multi-repo
+    workspace — omitted or "." for the ordinary single-repo case), and `skills` (which
+    registered skill(s) the Mastermind decided apply to this item) — one renderer used
     both for the original write and for re-rendering an amended document, not two."""
     sections = []
     for i, item in enumerate(items, start=1):
@@ -604,6 +725,9 @@ def render_tasks_md(items: List[Dict[str, Any]]) -> str:
         repo = item.get("repo")
         if repo and repo != ".":
             section += f"\n\n**Repo:** {repo}"
+        skills = item.get("skills")
+        if skills:
+            section += f"\n\n**Skills:** {', '.join(skills)}"
         sections.append(section)
     return "# Tasks\n\n" + "\n\n".join(sections) + "\n"
 
@@ -627,6 +751,9 @@ def _write_tasks(
     # a repo that doesn't actually exist in this workspace (hallucinated/stale) falls back
     # to "." (the task's own effective workspace_path) instead of failing the whole run.
     valid_repos = set(discover_repos(Path(workspace_path).expanduser())) if workspace_path else {"."}
+    # Same stance again for `skills` — an item can only carry a skill actually registered
+    # in ASSISTANT_SKILLS for (this mastermind, this item's own assistant); anything else
+    # (invented, or valid for a different assistant) is dropped, not raised.
     resolved_tasks = [
         {
             **item,
@@ -634,6 +761,11 @@ def _write_tasks(
                 slug_to_item_id[s] for s in item.get("depends_on", []) if s in slug_to_item_id
             ],
             "repo": item.get("repo") if item.get("repo") in valid_repos else ".",
+            "skills": [
+                s
+                for s in item.get("skills", [])
+                if s in ASSISTANT_SKILLS.get((mastermind, item["assistant"]), {})
+            ],
         }
         for item in data["tasks"]
     ]
@@ -655,6 +787,7 @@ async def start_run(
     assistant: Optional[str] = None,
     item_id: Optional[str] = None,
     repo_scope: Optional[str] = None,
+    skills: Optional[List[str]] = None,
 ) -> None:
     """Spawn `claude` for this run, push its reply onto the run's queue once it exits.
 
@@ -738,9 +871,31 @@ async def start_run(
                 "root itself."
             )
 
+    # Same idea, for whichever skills are actually registered for this domain — a Mastermind
+    # with nothing in the catalog (every domain but Frontend today) gets a byte-for-byte
+    # unchanged prompt, same as repo_guidance's no-op case above.
+    skills_guidance = ""
+    if stage == "tasks" and mastermind:
+        catalog_lines = [
+            f'- For **{a}**: `{name}` — {desc}'
+            for (m, a), skills_for_pair in ASSISTANT_SKILLS.items()
+            if m == mastermind
+            for name, desc in skills_for_pair.items()
+        ]
+        if catalog_lines:
+            skills_guidance = (
+                "\n\nThe following skills are available for specific Assistants in this "
+                'domain. For any task item you assign to one of these Assistants, add an '
+                'optional "skills" field (array of skill names) naming whichever of that '
+                "Assistant's available skills genuinely apply to this specific item — omit "
+                "it, or leave it empty, if none do. Never name a skill not listed here:\n"
+                + "\n".join(catalog_lines)
+            )
+
     if resume_session_id is not None:
         reminder = _RESUME_REMINDERS.get(stage)
-        resumed_prompt = f"{prompt}\n\n---\n\n{reminder}{repo_guidance}" if reminder else f"{prompt}{repo_guidance}"
+        suffix = f"{repo_guidance}{skills_guidance}"
+        resumed_prompt = f"{prompt}\n\n---\n\n{reminder}{suffix}" if reminder else f"{prompt}{suffix}"
         command = ["claude", "-r", resume_session_id, "-p", resumed_prompt, "--output-format", "json", *tool_flags]
     else:
         if stage == "context":
@@ -766,7 +921,12 @@ async def start_run(
             if stage in ("requirements", "tasks", "consultation", "execution")
             else ""
         )
-        combined_prompt = f"{context_block}{stage_prompt}\n\n---\n\n{label}:\n{prompt}{repo_guidance}"
+        # Only fires on this same fresh-call path as context_block, for the same reason:
+        # a reject/retry resumes the item's own prior session, which already saw this.
+        skill_block = _skills_block(skills or []) if stage == "execution" else ""
+        combined_prompt = (
+            f"{skill_block}{context_block}{stage_prompt}\n\n---\n\n{label}:\n{prompt}{repo_guidance}{skills_guidance}"
+        )
         command = ["claude", "-p", combined_prompt, "--output-format", "json", *tool_flags]
 
     process = await asyncio.create_subprocess_exec(

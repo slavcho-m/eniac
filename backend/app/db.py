@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS task_items (
     depends_on TEXT,
     sort_order INTEGER,
     repo TEXT,
+    skills TEXT,
     created_at TEXT NOT NULL,
     PRIMARY KEY (task_id, item_id)
 );
@@ -183,6 +184,7 @@ def init_db() -> None:
             "depends_on TEXT",
             "sort_order INTEGER",
             "repo TEXT",
+            "skills TEXT",
         ):
             try:
                 conn.execute(f"ALTER TABLE task_items ADD COLUMN {column}")
@@ -415,8 +417,8 @@ def insert_task_items(task_id: str, items: List[Dict[str, Any]]) -> None:
     with connect() as conn:
         for i, item in enumerate(items, start=1):
             conn.execute(
-                "INSERT INTO task_items (task_id, item_id, slug, description, assistant, status, depends_on, sort_order, repo, created_at) "
-                "VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)",
+                "INSERT INTO task_items (task_id, item_id, slug, description, assistant, status, depends_on, sort_order, repo, skills, created_at) "
+                "VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)",
                 (
                     task_id,
                     f"task{i}",
@@ -426,6 +428,7 @@ def insert_task_items(task_id: str, items: List[Dict[str, Any]]) -> None:
                     json.dumps(item.get("depends_on", [])),
                     i,
                     item.get("repo") or ".",
+                    json.dumps(item.get("skills", [])),
                     now(),
                 ),
             )
