@@ -17,13 +17,13 @@ export function DeleteProjectDialog({
   workspacePath,
   onDeleted,
 }: DeleteProjectDialogProps) {
-  const [deletePpm, setDeletePpm] = useState(false);
+  const [deletePpm, setDeletePpm] = useState(true);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   function handleClose() {
     if (deleting) return;
-    setDeletePpm(false);
+    setDeletePpm(true);
     setError(null);
     onClose();
   }
@@ -33,7 +33,7 @@ export function DeleteProjectDialog({
     setError(null);
     try {
       await deleteProject(projectId, deletePpm);
-      setDeletePpm(false);
+      setDeletePpm(true);
       onDeleted();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Failed to delete project.");
