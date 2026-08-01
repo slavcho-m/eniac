@@ -100,11 +100,32 @@ export function createTask(
   projectId: string,
   prompt: string,
   repoScope?: string,
+  imagePaths?: string[],
 ): Promise<{ task_id: string; run_id: string }> {
   return request(`/projects/${projectId}/tasks`, {
     method: "POST",
-    body: JSON.stringify({ prompt, repo_scope: repoScope }),
+    body: JSON.stringify({ prompt, repo_scope: repoScope, image_paths: imagePaths }),
   });
+}
+
+// Bypasses the shared `request()` helper — it force-sets `content-type: application/json`,
+// which breaks a multipart boundary. The browser sets its own header for FormData bodies.
+export async function uploadProjectImage(projectId: string, file: File): Promise<{ path: string }> {
+  const formData = new FormData();
+  formData.append("file", file);
+  const response = await fetch(`${BASE_URL}/projects/${projectId}/images`, {
+    method: "POST",
+    body: formData,
+  });
+  if (!response.ok) {
+    const body: unknown = await response.json().catch(() => null);
+    const detail =
+      body && typeof body === "object" && "detail" in body && typeof body.detail === "string"
+        ? body.detail
+        : response.statusText;
+    throw new ApiError(response.status, detail);
+  }
+  return response.json();
 }
 
 export function getTask(taskId: string): Promise<Task> {

@@ -8,9 +8,9 @@ import subprocess
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Set
+from typing import List, Optional, Set
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -49,6 +49,7 @@ class ProjectCreate(BaseModel):
 class TaskCreateBody(BaseModel):
     prompt: str
     repo_scope: Optional[str] = None
+    image_paths: Optional[List[str]] = None
 
 
 class RespondBody(BaseModel):
@@ -312,6 +313,35 @@ def update_project(project_id: str, body: ProjectUpdate):
     return _serialize_project(db.get_project(project_id))
 
 
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+# 7MB raw, not 10MB — base64 encoding (what the Read tool ultimately sends to the
+# Messages API) inflates size by ~1.33x, and the API's real per-image cap is 10MB
+# base64-encoded. 7MB raw -> ~9.3MB encoded, safely under that with margin.
+MAX_IMAGE_BYTES = 7 * 1024 * 1024
+
+
+@app.post("/projects/{project_id}/images")
+async def upload_project_image(project_id: str, file: UploadFile = File(...)):
+    if db.get_project(project_id) is None:
+        raise HTTPException(404, f"project '{project_id}' not found")
+
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in IMAGE_EXTENSIONS:
+        raise HTTPException(400, f"unsupported image type '{suffix}'")
+
+    body = await file.read()
+    if len(body) > MAX_IMAGE_BYTES:
+        raise HTTPException(400, "image exceeds the 7MB size limit")
+
+    attachments_dir = db.PPM_ROOT / project_id / "attachments"
+    attachments_dir.mkdir(parents=True, exist_ok=True)
+    stored_name = f"{uuid.uuid4().hex}_{Path(file.filename or 'image').name}"
+    (attachments_dir / stored_name).write_bytes(body)
+
+    relative_path = str((attachments_dir / stored_name).relative_to(db.PPM_ROOT))
+    return {"path": relative_path}
+
+
 @app.post("/projects/{project_id}/refresh-context")
 async def refresh_project_context(project_id: str):
     project = db.get_project(project_id)
@@ -426,8 +456,15 @@ async def create_task(project_id: str, body: TaskCreateBody):
     if db.get_project(project_id) is None:
         raise HTTPException(404, f"project '{project_id}' not found")
 
+    image_paths_json = None
+    if body.image_paths:
+        for p in body.image_paths:
+            if not _resolve_ppm_path(p).is_file():
+                raise HTTPException(404, f"image '{p}' not found")
+        image_paths_json = json.dumps(body.image_paths)
+
     task_id = uuid.uuid4().hex
-    db.insert_task(task_id, project_id, body.prompt, repo_scope=body.repo_scope)
+    db.insert_task(task_id, project_id, body.prompt, repo_scope=body.repo_scope, image_paths=image_paths_json)
 
     run_id = runs.new_run_id("context", body.prompt)
     db.insert_run(run_id, task_id, "context")
@@ -457,6 +494,7 @@ def _serialize_task(task) -> dict:
         "error": task["error"],
         "has_pending_amendment": task["pending_amendment"] is not None,
         "repo_scope": task["repo_scope"],
+        "image_count": len(json.loads(task["image_paths"])) if task["image_paths"] else 0,
         "created_at": task["created_at"],
     }
 
@@ -669,6 +707,10 @@ async def confirm_context(task_id: str):
 
     confirmed_at = db.confirm_task_context(task_id)
 
+    image_paths = (
+        [str(db.PPM_ROOT / p) for p in json.loads(task["image_paths"])] if task["image_paths"] else None
+    )
+
     run_id = runs.new_run_id("requirements", task["feature_slug"])
     db.insert_run(run_id, task_id, "requirements")
     db.set_task_investigating(task_id)
@@ -683,6 +725,7 @@ async def confirm_context(task_id: str):
             mastermind=first_mastermind,
             workspace_path=workspace_path,
             repo_scope=task["repo_scope"],
+            image_paths=image_paths,
         ),
     )
 

@@ -66,6 +66,7 @@ export interface Task {
   /** Null for an ordinary/orchestrator-root task; a relative path (matching one of the
    * owning Project's `repos`) if this task was created scoped to one child repo. */
   repo_scope: string | null;
+  image_count: number;
   created_at: string;
 }
 

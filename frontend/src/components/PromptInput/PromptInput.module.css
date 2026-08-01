@@ -1,6 +1,19 @@
 .wrapper {
-  position: relative;
+  display: flex;
+  flex-direction: column;
   width: 100%;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-card);
+  overflow: hidden;
+}
+
+.wrapper:focus-within {
+  border-color: var(--info-border);
+}
+
+.dragging {
+  border-color: var(--info-border);
 }
 
 .textarea {
@@ -8,39 +21,70 @@
   width: 100%;
   box-sizing: border-box;
   resize: none;
-  background: var(--bg-panel);
-  border: 1px solid var(--border-hairline);
-  border-radius: var(--radius-card);
-  padding: 12px 52px 44px 14px;
+  background: none;
+  border: none;
+  padding: 12px 14px;
   font-family: inherit;
   font-size: var(--text-body);
   color: var(--text-primary);
   outline: none;
 }
 
-.textarea:focus {
-  border-color: var(--info-border);
-}
-
 .textarea::placeholder {
   color: var(--text-tertiary);
 }
 
+/* Slim footer bar. Tint is a bare white overlay over the textarea's own background
+ * (not a named surface token) so the separation stays barely-there — just enough to read
+ * as a distinct zone, not a visually competing panel. Controls live here, never over the
+ * text. */
+.footer {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  background: rgba(255, 255, 255, 0.025);
+  border-top: 1px solid var(--border-hairline);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.attach,
 .submit {
-  position: absolute;
-  right: 10px;
-  bottom: 10px;
-  width: 32px;
-  height: 32px;
+  flex-shrink: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  width: 28px;
+  height: 28px;
   border: none;
-  border-radius: 50%;
+  /* Square-ish, not a pill — matches this app's terminal/monospace icon-button
+   * language (e.g. ProjectSwitcher's settings button) rather than a chat-bubble circle. */
+  border-radius: var(--radius-card);
+  cursor: pointer;
+  transition: opacity 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+
+.attach {
+  background: none;
+  color: var(--text-tertiary);
+}
+
+.attach:hover {
+  color: var(--text-primary);
+  background: var(--neutral-bg);
+}
+
+.attach:disabled {
+  cursor: not-allowed;
+  opacity: 0.35;
+}
+
+.submit {
   background: var(--btn-primary-bg);
   color: var(--btn-primary-text);
-  cursor: pointer;
-  transition: opacity 0.12s ease;
 }
 
 .submit:disabled {

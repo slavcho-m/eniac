@@ -901,6 +901,7 @@ async def start_run(
     item_id: Optional[str] = None,
     repo_scope: Optional[str] = None,
     skills: Optional[List[str]] = None,
+    image_paths: Optional[List[str]] = None,
 ) -> None:
     """Spawn `claude` for this run, push its reply onto the run's queue once it exits.
 
@@ -1053,10 +1054,35 @@ async def start_run(
         # Only fires on this same fresh-call path as context_block, for the same reason:
         # a reject/retry resumes the item's own prior session, which already saw this.
         skill_block = _skills_block(skills or []) if stage == "execution" else ""
+        # Only the "requirements" stage's fresh call needs this — "tasks"/"consultation"
+        # resume that same Mastermind session via -r, so an image read here once is already
+        # in that session's own transcript history by the time those resume, same reasoning
+        # as context_block/skill_block above.
+        images_block = ""
+        image_dir_flags: List[str] = []
+        if stage == "requirements" and image_paths:
+            image_list = "\n".join(f"- `{p}`" for p in image_paths)
+            images_block = (
+                "\n\nThe user attached the following image file(s) with this request. Use "
+                f"the Read tool to view any that are relevant to understanding the task:\n{image_list}"
+            )
+            # Read being in --tools isn't enough on its own for a path outside this stage's
+            # own cwd (the workspace repo) -- found live: the attachments dir lives under
+            # PPM_ROOT, so a Read call against it was denied even with Read granted, same
+            # class of non-interactive-mode gap as Edit/Write needing acceptEdits above,
+            # just for out-of-cwd reads specifically. --add-dir grants exactly those
+            # directories without loosening anything else.
+            image_dirs = sorted({str(Path(p).parent) for p in image_paths})
+            for d in image_dirs:
+                image_dir_flags += ["--add-dir", d]
         combined_prompt = (
-            f"{skill_block}{context_block}{stage_prompt}\n\n---\n\n{label}:\n{prompt}{repo_guidance}{skills_guidance}"
+            f"{skill_block}{context_block}{stage_prompt}\n\n---\n\n{label}:\n{prompt}"
+            f"{repo_guidance}{skills_guidance}{images_block}"
         )
-        command = ["claude", "-p", combined_prompt, "--output-format", "json", *tool_flags, *model_flags]
+        command = [
+            "claude", "-p", combined_prompt, "--output-format", "json",
+            *tool_flags, *model_flags, *image_dir_flags,
+        ]
 
     process = await asyncio.create_subprocess_exec(
         *command,

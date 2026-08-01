@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     error TEXT,
     pending_amendment TEXT,
     repo_scope TEXT,
+    image_paths TEXT,
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS runs (
@@ -171,6 +172,7 @@ def init_db() -> None:
             "error TEXT",
             "pending_amendment TEXT",
             "repo_scope TEXT",
+            "image_paths TEXT",
         ):
             try:
                 conn.execute(f"ALTER TABLE tasks ADD COLUMN {column}")
@@ -279,12 +281,18 @@ def delete_project(project_id: str) -> None:
         conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
 
 
-def insert_task(task_id: str, project_id: str, prompt: str, repo_scope: Optional[str] = None) -> None:
+def insert_task(
+    task_id: str,
+    project_id: str,
+    prompt: str,
+    repo_scope: Optional[str] = None,
+    image_paths: Optional[str] = None,
+) -> None:
     with connect() as conn:
         conn.execute(
-            "INSERT INTO tasks (id, project_id, prompt, status, repo_scope, created_at) "
-            "VALUES (?, ?, ?, 'running', ?, ?)",
-            (task_id, project_id, prompt, repo_scope, now()),
+            "INSERT INTO tasks (id, project_id, prompt, status, repo_scope, image_paths, created_at) "
+            "VALUES (?, ?, ?, 'running', ?, ?, ?)",
+            (task_id, project_id, prompt, repo_scope, image_paths, now()),
         )
 
 
