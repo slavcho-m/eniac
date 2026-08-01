@@ -12,6 +12,7 @@ When you are done (or have gone as far as you productively can), respond with **
 ```json
 {"status": "done", "summary": "one paragraph describing what you changed and why"}
 ```
+This applies even if you conclude no changes were actually needed (e.g. the existing code already satisfies the task item) — that's still a "done" report, not an excuse to reply in plain prose instead. Always respond with this exact JSON shape, never just a written explanation on its own.
 
 **If you're genuinely blocked and cannot proceed** — not "this is ambiguous" (the requirements and task description should already be concrete enough to act on directly; if they're not, do your best and note the gap in `summary` instead), only use this if something is actually broken, e.g. a file the requirements reference doesn't exist, or the change is impossible as described:
 ```json

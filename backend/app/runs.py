@@ -506,10 +506,19 @@ def _extract_balanced_object(text: str) -> Optional[str]:
                     end = i
                     break
         if end is not None:
-            # Resume *after* this match, not from inside it — a brace-like substring
-            # inside this object's own string values (e.g. real content describing JSX
-            # like `{storeLabel}`) must not be re-examined as its own candidate.
-            best = text[start : end + 1]
+            candidate = text[start : end + 1]
+            # A real JSON object always has at least one "key": value pair, so a colon is
+            # a cheap, effective filter against a merely brace-balanced non-JSON substring
+            # in the model's own prose — found live: a route-parameter placeholder like
+            # `{store}` (Laravel-style, no colon) balances perfectly and was mistaken for
+            # "the JSON reply" on a response that was actually plain, un-JSON-wrapped prose,
+            # producing a baffling "line 1 column 2" error instead of a clear "no JSON found".
+            if ":" in candidate:
+                best = candidate
+            # Resume *after* this match either way, not from inside it — a brace-like
+            # substring inside this object's own string values (e.g. real content
+            # describing JSX like `{storeLabel}`) must not be re-examined as its own
+            # candidate.
             start = text.find("{", end + 1)
         else:
             start = text.find("{", start + 1)
@@ -609,7 +618,18 @@ def _parse_tasks_json(result_text: str, mastermind: str) -> Dict[str, Any]:
 
 
 def _parse_assistant_json(result_text: str, mastermind: Optional[str] = None) -> Dict[str, Any]:
-    data = json.loads(_strip_fences(result_text))
+    try:
+        data = json.loads(_strip_fences(result_text))
+    except json.JSONDecodeError:
+        # Found live: an Assistant that correctly determined no changes were needed
+        # reported that in plain prose instead of the required JSON envelope, with no
+        # JSON object anywhere in the response at all -- hard-failing the whole task item
+        # (forcing a retry that's liable to hit the exact same non-compliant reply again,
+        # since the underlying finding is genuinely "nothing to do") throws away a
+        # perfectly informative report over a formatting slip. A human reviews `summary`
+        # before anything is approved either way, same as a well-formed "done" -- so
+        # falling back to it here costs nothing a normal review wouldn't already catch.
+        return {"status": "done", "summary": result_text.strip()}
     status_val = data.get("status")
 
     if status_val == "done":
