@@ -796,6 +796,114 @@ def approve_tasks(task_id: str):
     return {"task_id": task_id, "tasks_approved_at": approved_at}
 
 
+@app.post("/tasks/{task_id}/reject-context")
+async def reject_context(task_id: str, body: RejectAmendmentBody):
+    task = db.get_task(task_id)
+    if task is None:
+        raise HTTPException(404, f"task '{task_id}' not found")
+    if task["status"] != "context_ready":
+        raise HTTPException(409, f"context not ready (status: {task['status']})")
+    if not body.feedback:
+        raise HTTPException(400, "feedback is required when rejecting")
+
+    db.set_task_running(task_id)
+
+    run_id = runs.new_run_id("context", body.feedback)
+    db.insert_run(run_id, task_id, "context")
+    _fire_and_forget(
+        run_id,
+        runs.start_run(
+            run_id,
+            task_id,
+            task["project_id"],
+            body.feedback,
+            "context",
+            resume_session_id=task["session_id"],
+        ),
+    )
+
+    return {"task_id": task_id, "run_id": run_id}
+
+
+@app.post("/tasks/{task_id}/reject-requirements")
+async def reject_requirements(task_id: str, body: RejectAmendmentBody):
+    task = db.get_task(task_id)
+    if task is None:
+        raise HTTPException(404, f"task '{task_id}' not found")
+    if task["status"] != "requirements_ready":
+        raise HTTPException(409, f"requirements not ready (status: {task['status']})")
+    if not body.feedback:
+        raise HTTPException(400, "feedback is required when rejecting")
+
+    first_mastermind = _current_mastermind(task)
+    project = db.get_project(task["project_id"])
+    workspace_path = _effective_workspace_path(project, task)
+    if not workspace_path or not Path(workspace_path).expanduser().is_dir():
+        raise HTTPException(409, "workspace_path is missing or no longer exists")
+
+    db.set_task_investigating(task_id)
+
+    run_id = runs.new_run_id("requirements", task["feature_slug"])
+    db.insert_run(run_id, task_id, "requirements")
+    _fire_and_forget(
+        run_id,
+        runs.start_run(
+            run_id,
+            task_id,
+            task["project_id"],
+            body.feedback,
+            "requirements",
+            resume_session_id=task["session_id"],
+            mastermind=first_mastermind,
+            workspace_path=workspace_path,
+        ),
+    )
+
+    return {"task_id": task_id, "run_id": run_id}
+
+
+@app.post("/tasks/{task_id}/reject-tasks")
+async def reject_tasks(task_id: str, body: RejectAmendmentBody):
+    task = db.get_task(task_id)
+    if task is None:
+        raise HTTPException(404, f"task '{task_id}' not found")
+    if task["status"] != "tasks_ready":
+        raise HTTPException(409, f"tasks not ready (status: {task['status']})")
+    if not body.feedback:
+        raise HTTPException(400, "feedback is required when rejecting")
+
+    first_mastermind = _current_mastermind(task)
+    project = db.get_project(task["project_id"])
+    workspace_path = _effective_workspace_path(project, task)
+    if not workspace_path or not Path(workspace_path).expanduser().is_dir():
+        raise HTTPException(409, "workspace_path is missing or no longer exists")
+
+    # Nothing has executed yet at this gate (approve-assistant requires
+    # tasks_approved_at, which is never set before this point) -- every task_items
+    # row is still 'pending', so it's safe to discard the rejected batch outright
+    # rather than appending the regenerated list after it.
+    db.delete_task_items(task_id)
+    db.set_task_planning(task_id)
+
+    run_id = runs.new_run_id("tasks", task["feature_slug"])
+    db.insert_run(run_id, task_id, "tasks")
+    _fire_and_forget(
+        run_id,
+        runs.start_run(
+            run_id,
+            task_id,
+            task["project_id"],
+            body.feedback,
+            "tasks",
+            resume_session_id=task["session_id"],
+            mastermind=first_mastermind,
+            workspace_path=workspace_path,
+        ),
+    )
+
+    return {"task_id": task_id, "run_id": run_id}
+
+
 @app.post("/tasks/{task_id}/approve-assistant")
 async def approve_assistant(task_id: str, body: Optional[ApproveAssistantBody] = None):
     task = db.get_task(task_id)

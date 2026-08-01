@@ -8,6 +8,7 @@ export { SectionLabel } from "./SectionLabel/SectionLabel";
 export { TextInput } from "./TextInput/TextInput";
 export { Textarea } from "./Textarea/Textarea";
 export { PromptInput } from "./PromptInput/PromptInput";
+export { FeedbackForm } from "./FeedbackForm/FeedbackForm";
 export { Checkbox } from "./Checkbox/Checkbox";
 
 export { StatusBanner } from "./StatusBanner/StatusBanner";

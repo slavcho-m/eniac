@@ -72,6 +72,11 @@ export function BashApprovalPrompt({ approval, assistantLabel, onResolved }: Bas
 
       {mode === "feedback" ? (
         <div className={styles.feedbackForm}>
+          <div style={{ display: "flex", justifyContent: "flex-end" }}>
+            <Button variant="secondary" disabled={submitting} onClick={() => setMode("actions")}>
+              Cancel
+            </Button>
+          </div>
           <PromptInput
             placeholder="Why are you rejecting this command?"
             value={feedback}
@@ -93,9 +98,6 @@ export function BashApprovalPrompt({ approval, assistantLabel, onResolved }: Bas
               onClick={() => decide("deny", undefined, feedback.trim() + STOP_BASH_SUFFIX)}
             >
               Send & Stop Using Bash
-            </Button>
-            <Button variant="secondary" disabled={submitting} onClick={() => setMode("actions")}>
-              Cancel
             </Button>
           </div>
         </div>

@@ -336,6 +336,11 @@ def set_task_awaiting_clarification(
         )
 
 
+def set_task_running(task_id: str) -> None:
+    with connect() as conn:
+        conn.execute("UPDATE tasks SET status = 'running' WHERE id = ?", (task_id,))
+
+
 def set_task_investigating(task_id: str) -> None:
     with connect() as conn:
         conn.execute("UPDATE tasks SET status = 'investigating' WHERE id = ?", (task_id,))
@@ -519,6 +524,11 @@ def append_task_items(
                 ),
             )
     return new_item_ids
+
+
+def delete_task_items(task_id: str) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM task_items WHERE task_id = ?", (task_id,))
 
 
 def get_task_items(task_id: str) -> List[sqlite3.Row]:

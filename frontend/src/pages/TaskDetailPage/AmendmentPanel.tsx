@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Badge, Button, DiffSummaryChip, DiffViewer, MarkdownText, PromptInput, SectionLabel } from "@/components";
+import { Badge, Button, DiffSummaryChip, DiffViewer, FeedbackForm, MarkdownText, PromptInput, SectionLabel } from "@/components";
 import { approveAmendment, getTaskAmendment, rejectAmendment } from "@/lib/api";
 import { useAsync } from "@/hooks/useAsync";
 import { parseDiff } from "@/lib/parseDiff";
@@ -139,27 +139,17 @@ export function AmendmentPanel({ taskId, onApproved, onRunStarted }: AmendmentPa
 
       <div style={{ marginTop: 16, borderTop: "1px solid var(--border-hairline)", paddingTop: 16 }}>
         {showFeedbackForm ? (
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            <PromptInput
-              placeholder="Describe what should change about this proposal…"
-              value={feedback}
-              onChange={setFeedback}
-              onSubmit={handleAnswerOrReject}
-              disabled={submitting}
-            />
-            <div>
-              <Button
-                variant="secondary"
-                onClick={() => {
-                  setShowFeedbackForm(false);
-                  refetch();
-                }}
-                disabled={submitting}
-              >
-                Cancel
-              </Button>
-            </div>
-          </div>
+          <FeedbackForm
+            placeholder="Describe what should change about this proposal…"
+            value={feedback}
+            onChange={setFeedback}
+            onSubmit={handleAnswerOrReject}
+            onCancel={() => {
+              setShowFeedbackForm(false);
+              refetch();
+            }}
+            disabled={submitting}
+          />
         ) : (
           <div style={{ display: "flex", gap: 12 }}>
             <Button variant="primary" onClick={handleApprove} disabled={submitting}>

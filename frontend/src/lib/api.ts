@@ -169,6 +169,27 @@ export function approveTasks(taskId: string): Promise<{ task_id: string; tasks_a
   return request(`/tasks/${taskId}/approve-tasks`, { method: "POST" });
 }
 
+export function rejectContext(taskId: string, feedback: string): Promise<{ task_id: string; run_id: string }> {
+  return request(`/tasks/${taskId}/reject-context`, {
+    method: "POST",
+    body: JSON.stringify({ feedback }),
+  });
+}
+
+export function rejectRequirements(taskId: string, feedback: string): Promise<{ task_id: string; run_id: string }> {
+  return request(`/tasks/${taskId}/reject-requirements`, {
+    method: "POST",
+    body: JSON.stringify({ feedback }),
+  });
+}
+
+export function rejectTasks(taskId: string, feedback: string): Promise<{ task_id: string; run_id: string }> {
+  return request(`/tasks/${taskId}/reject-tasks`, {
+    method: "POST",
+    body: JSON.stringify({ feedback }),
+  });
+}
+
 export function approveAssistant(
   taskId: string,
   assistant?: string,

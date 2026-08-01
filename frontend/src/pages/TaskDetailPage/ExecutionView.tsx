@@ -5,8 +5,8 @@ import {
   Button,
   DiffSummaryChip,
   DiffViewer,
+  FeedbackForm,
   MarkdownText,
-  PromptInput,
   SectionLabel,
   StatusBanner,
 } from "@/components";
@@ -335,24 +335,18 @@ export function ExecutionView({ task, items, onRefetch, onRunStarted }: Executio
       {actionable && viewMode.kind === "actionable" ? (
         <div style={{ flexShrink: 0, borderTop: "1px solid var(--border-hairline)", marginTop: 16, paddingTop: 16 }}>
           {showFeedbackForm ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <PromptInput
-                placeholder={
-                  blocked
-                    ? "Tell the Assistant how to proceed…"
-                    : "Describe what needs fixing before this goes back to the Assistant…"
-                }
-                value={feedback}
-                onChange={setFeedback}
-                onSubmit={handleReject}
-                disabled={submitting}
-              />
-              <div>
-                <Button variant="secondary" onClick={() => setShowFeedbackForm(false)} disabled={submitting}>
-                  Cancel
-                </Button>
-              </div>
-            </div>
+            <FeedbackForm
+              placeholder={
+                blocked
+                  ? "Tell the Assistant how to proceed…"
+                  : "Describe what needs fixing before this goes back to the Assistant…"
+              }
+              value={feedback}
+              onChange={setFeedback}
+              onSubmit={handleReject}
+              onCancel={() => setShowFeedbackForm(false)}
+              disabled={submitting}
+            />
           ) : (
             <div style={{ display: "flex", gap: 12 }}>
               <Button variant="primary" onClick={handleApprove} disabled={submitting}>
