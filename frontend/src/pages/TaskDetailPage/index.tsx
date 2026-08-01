@@ -16,7 +16,13 @@ import { ExecutionView } from "./ExecutionView";
 import { FilesPanel } from "./FilesPanel";
 import { InFlightView } from "./InFlightView";
 import { LiveRunView } from "./LiveRunView";
+import { MastermindProgress } from "./MastermindProgress";
 import { TerminalStateView } from "./TerminalStateView";
+
+function mastermindLabel(task: Task): string {
+  if (!task.current_mastermind) return "Mastermind";
+  return `${task.current_mastermind.charAt(0).toUpperCase()}${task.current_mastermind.slice(1)} Mastermind`;
+}
 
 function renderStage(
   task: Task,
@@ -36,13 +42,15 @@ function renderStage(
         <ConfirmGateView task={task} stage="context" onRefetch={onRefetch} onRunStarted={onRunStarted} />
       );
     case "investigating":
-      return <InFlightView label="Mastermind is investigating…" onRefetch={onRefetch} />;
+      return <InFlightView label={`${mastermindLabel(task)} is investigating…`} onRefetch={onRefetch} />;
     case "requirements_ready":
       return (
         <ConfirmGateView task={task} stage="requirements" onRefetch={onRefetch} onRunStarted={onRunStarted} />
       );
     case "planning_tasks":
-      return <InFlightView label="Breaking work into task items…" onRefetch={onRefetch} />;
+      return (
+        <InFlightView label={`${mastermindLabel(task)} is breaking work into task items…`} onRefetch={onRefetch} />
+      );
     case "tasks_ready":
       return task.tasks_approved_at ? (
         <ExecutionView task={task} items={items} onRefetch={onRefetch} onRunStarted={onRunStarted} />
@@ -112,6 +120,12 @@ export function TaskDetailPage() {
               </button>
             ) : null}
           </div>
+
+          {task.masterminds && task.masterminds.length > 1 ? (
+            <div style={{ marginTop: 16 }}>
+              <MastermindProgress task={task} />
+            </div>
+          ) : null}
 
           {task.has_pending_amendment ? (
             <div style={{ marginTop: 16 }}>

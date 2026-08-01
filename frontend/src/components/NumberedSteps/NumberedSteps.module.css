@@ -21,6 +21,28 @@
   line-height: 1.5;
 }
 
+.done .number {
+  color: var(--success);
+}
+
+.done .content {
+  color: var(--text-tertiary);
+}
+
+.current .number {
+  color: var(--info);
+  font-weight: 600;
+}
+
+.current .content {
+  color: var(--text-primary);
+}
+
+.pending .number,
+.pending .content {
+  color: var(--text-tertiary);
+}
+
 .content :global(a) {
   color: var(--info);
   text-decoration: none;

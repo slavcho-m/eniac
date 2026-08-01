@@ -42,10 +42,10 @@ MASTERMIND_ASSISTANTS = {
 # fully revertible) once the hook mechanism was built and verified live. See
 # [[eniac-no-unattended-bash]] for that history — this supersedes it, not contradicts it.
 ASSISTANT_TOOLS = {
-    "Design": "Edit,Write,Read,Grep,Glob",
-    "Implementation": "Edit,Write,Read,Grep,Glob",
-    "Review": "Read,Grep,Glob",
-    "Test": "Edit,Write,Read,Grep,Glob,Bash",
+    "Design": "Read,Grep,Glob",
+    "Implementation": "Edit,Write,Read",
+    "Review": "Read",
+    "Test": "Edit,Write,Read,Bash",
     "Analysis": "Read,Grep,Glob",
     "CI-CD Implementer": "Edit,Write,Read,Grep,Glob,Bash",
     "Environment": "Edit,Write,Read,Grep,Glob,Bash",
@@ -54,9 +54,60 @@ ASSISTANT_TOOLS = {
     "Diagram": "Edit,Write,Read,Grep,Glob",
 }
 
-# Skills only ever apply to the execution stage — it's the only stage that skips
-# --safe-mode, and --safe-mode disables skills entirely regardless of source (confirmed
-# live: a --plugin-dir-loaded skill was completely invisible under --safe-mode). Keyed by
+# ponytail: hardcoded for now rather than a real settings UI -- see
+# docs/things-to-address.md for the "extend this into a real setting" note. Every value
+# here is either "sonnet" (unchanged from the default this was tuned against) or a
+# deliberate downgrade -- never a bump to a pricier model, since the point is spending
+# less, not more. Downgraded to "haiku": Test/Analysis/Discovery/Diagram, all cases where a
+# weak output is caught downstream rather than silently harmful (a bad test shows up in
+# your own diff review; a bad investigation report is just read and judged, not executed).
+# Kept at "sonnet": anything that ships as real code (Implementation), the safety net whose
+# whole job is catching problems (Review), anything every later stage reads (Supervisor's
+# scoping, Mastermind's requirements, Context Investigator's architecture docs, Design's
+# now-authoritative design doc), anything with real infra/deploy blast radius (CI-CD
+# Implementer, Environment), and genuinely hard, infrequent judgment calls (Decision).
+# "mastermind" is deliberately ONE key covering requirements/tasks/consultation, not three
+# separate ones -- tasks/consultation resume the requirements session, and switching models
+# on a resumed call forfeits part of the prompt cache (confirmed live: resuming with the
+# same model reused ~27.5k cached tokens for 173 new ones; resuming that same session with
+# a different model reused only ~15.6k and had to re-pay for ~5k fresh) -- tiering those
+# three differently would cost more, not less.
+ROLE_MODELS: Dict[str, str] = {
+    "supervisor": "sonnet",
+    "context_investigator": "sonnet",
+    "mastermind": "sonnet",
+    "Design": "sonnet",
+    "Implementation": "sonnet",
+    "Review": "sonnet",
+    "Test": "haiku",
+    "Analysis": "haiku",
+    "CI-CD Implementer": "sonnet",
+    "Environment": "sonnet",
+    "Discovery": "haiku",
+    "Decision": "sonnet",
+    "Diagram": "haiku",
+}
+
+
+def _model_for_stage(stage: str, assistant: Optional[str] = None) -> str:
+    """Resolves which ROLE_MODELS entry a given start_run call should use. "context" ->
+    the Supervisor; "requirements"/"tasks"/"consultation" all share the single
+    "mastermind" entry (see ROLE_MODELS' docstring-comment for why); "execution" is keyed
+    by the assistant's own name, same granularity as ASSISTANT_TOOLS."""
+    if stage == "context":
+        return ROLE_MODELS["supervisor"]
+    if stage in ("requirements", "tasks", "consultation"):
+        return ROLE_MODELS["mastermind"]
+    assert stage == "execution" and assistant is not None
+    return ROLE_MODELS[assistant]
+
+# Skills only ever apply to the execution stage — read straight off disk into the prompt
+# string by `_skills_block` below, not through the CLI's own skill-loading, specifically
+# because --safe-mode disables skills entirely regardless of source (confirmed live: a
+# --plugin-dir-loaded skill was completely invisible under --safe-mode) — and most
+# execution-stage Assistants run under --safe-mode too now (see ASSISTANT_TOOLS/
+# start_run), so relying on the CLI's own mechanism would've broken skills for exactly the
+# roles they exist for. Keyed by
 # (mastermind, assistant), not assistant name alone, since assistant names are shared
 # across domains (e.g. "Implementation" exists for both frontend and backend) but the
 # skills that make sense for each are not.
@@ -97,17 +148,15 @@ _TEST_WRITING_CRAFT = (
     "edge-case coverage, and confirming tests actually pass rather than assuming."
 )
 
-# One catalog entry per (mastermind, assistant) pair that has a skill today. Design and
-# Implementation share the same code-writing skill per domain (same underlying craft --
-# structure vs. full logic, not a different concern), same for Review and Test across
-# backend/frontend (the craft of reviewing/testing well doesn't depend on which codebase
-# it's aimed at, only the target does, and that's already supplied via requirements.md).
+# One catalog entry per (mastermind, assistant) pair that has a skill today. Design has
+# none -- it doesn't write code, only a design document, so the code-writing craft skill
+# below doesn't apply to it. Same skill for Review and Test across backend/frontend (the
+# craft of reviewing/testing well doesn't depend on which codebase it's aimed at, only the
+# target does, and that's already supplied via requirements.md).
 ASSISTANT_SKILLS: Dict[Tuple[str, str], Dict[str, str]] = {
-    ("frontend", "Design"): {"frontend-code-writing": _FRONTEND_CODE_WRITING},
     ("frontend", "Implementation"): {"frontend-code-writing": _FRONTEND_CODE_WRITING},
     ("frontend", "Review"): {"code-review-craft": _CODE_REVIEW_CRAFT},
     ("frontend", "Test"): {"test-writing-craft": _TEST_WRITING_CRAFT},
-    ("backend", "Design"): {"backend-code-writing": _BACKEND_CODE_WRITING},
     ("backend", "Implementation"): {"backend-code-writing": _BACKEND_CODE_WRITING},
     ("backend", "Review"): {"code-review-craft": _CODE_REVIEW_CRAFT},
     ("backend", "Test"): {"test-writing-craft": _TEST_WRITING_CRAFT},
@@ -214,8 +263,8 @@ _RESUME_REMINDERS = {
     "requirements": (
         'Reminder: respond with only a single JSON object -- no markdown fences, no prose '
         'before or after it -- either {"status": "needs_clarification", "questions": [...]} '
-        'or {"status": "ready", "summary": ..., "requirements": [...], "affected_files": [...], '
-        '"out_of_scope": [...], "open_risks": [...]}.'
+        'or {"status": "ready", "summary": ..., "requirements": [...], "file_plan": '
+        '[{"path": ..., "action": ..., "purpose": ...}], "out_of_scope": [...], "open_risks": [...]}.'
     ),
     "tasks": (
         'Reminder: respond with only a single JSON object -- no markdown fences, no prose '
@@ -519,12 +568,20 @@ def _parse_mastermind_json(result_text: str) -> Dict[str, Any]:
         return _parse_needs_clarification(data)
 
     if data.get("status") == "ready":
-        required = {"summary", "requirements", "affected_files", "out_of_scope", "open_risks"}
+        required = {"summary", "requirements", "file_plan", "out_of_scope", "open_risks"}
         missing = required - data.keys()
         if missing:
             raise ValueError(f"missing keys: {missing}")
         if not data["requirements"]:
             raise ValueError("requirements must be non-empty")
+        # file_plan is what lets Implementation/Review/Test skip their own Grep/Glob
+        # discovery (see ASSISTANT_TOOLS) -- it has to actually be there and each entry
+        # has to be usable, not just present.
+        if not data["file_plan"]:
+            raise ValueError("file_plan must be non-empty")
+        for entry in data["file_plan"]:
+            if not {"path", "action", "purpose"} <= entry.keys():
+                raise ValueError(f"invalid file_plan entry: {entry}")
         return data
 
     raise ValueError(f"unknown status: {data.get('status')!r}")
@@ -644,6 +701,9 @@ def _render_requirements_md(data: Dict[str, Any]) -> str:
     def bullets(items: List[str], empty: str) -> str:
         return "\n".join(f"- {item}" for item in items) if items else empty
 
+    def file_plan_bullets(entries: List[Dict[str, str]]) -> str:
+        return "\n".join(f"- `{e['path']}` ({e['action']}): {e['purpose']}" for e in entries)
+
     return f"""# Requirements
 
 ## Summary
@@ -652,8 +712,8 @@ def _render_requirements_md(data: Dict[str, Any]) -> str:
 ## Requirements
 {bullets(data['requirements'], "None.")}
 
-## Affected Files
-{bullets(data['affected_files'], "None identified.")}
+## File Plan
+{file_plan_bullets(data['file_plan'])}
 
 ## Out of Scope
 {bullets(data['out_of_scope'], "None noted.")}
@@ -663,8 +723,26 @@ def _render_requirements_md(data: Dict[str, Any]) -> str:
 """
 
 
+def _resolve_item_repo(repo: Optional[str], valid_repos: set) -> str:
+    """Same "untrusted output, default rather than raise" stance as depends_on/skills below:
+    an item naming a repo that doesn't exist in this workspace (hallucinated/stale/omitted)
+    falls back to "." when the workspace root is itself a valid git target, or else to the
+    first discovered child repo — "." is never a usable fallback for an orchestrator whose
+    root has no .git of its own (discover_repos only ever returns "." when there are no
+    child repos to report instead), so defaulting to it there would just trade one invalid
+    value for another."""
+    if repo in valid_repos:
+        return repo
+    if "." in valid_repos:
+        return "."
+    return sorted(valid_repos)[0] if valid_repos else "."
+
+
 def _resolve_slug_references(
-    task_id: str, new_tasks: List[Dict[str, Any]], deprecate_refs: Optional[List[str]] = None
+    task_id: str,
+    new_tasks: List[Dict[str, Any]],
+    deprecate_refs: Optional[List[str]] = None,
+    workspace_path: Optional[str] = None,
 ):
     """`depends_on`/`deprecate_item_ids` from a Review proposal or Mastermind consultation
     can reference an item by its real item_id (task2) or by slug (write-multiply-tests) —
@@ -676,6 +754,12 @@ def _resolve_slug_references(
     same batch (assigned the same provisional item_ids `append_task_items` will really use).
     Falls back to the given value unchanged if it doesn't match any known slug, so an
     already-real item_id passes through untouched.
+
+    Also resolves `repo` the same way `_write_tasks` does for the original plan — a Review
+    proposal or consultation is just as capable of naming a bad/missing repo on an
+    orchestrator project, and until this was added that value passed straight through to
+    execution unchecked (only failing later, mid-run, once an Assistant actually tried to
+    git-status an unresolvable path).
     """
     existing = db.get_task_items(task_id)
     slug_to_item_id = {item["slug"]: item["item_id"] for item in existing}
@@ -683,8 +767,13 @@ def _resolve_slug_references(
     for offset, item in enumerate(new_tasks):
         slug_to_item_id.setdefault(item["slug"], f"task{next_n + offset}")
 
+    valid_repos = set(discover_repos(Path(workspace_path).expanduser())) if workspace_path else {"."}
     resolved_new_tasks = [
-        {**item, "depends_on": [slug_to_item_id.get(s, s) for s in item.get("depends_on", [])]}
+        {
+            **item,
+            "depends_on": [slug_to_item_id.get(s, s) for s in item.get("depends_on", [])],
+            "repo": _resolve_item_repo(item.get("repo"), valid_repos),
+        }
         for item in new_tasks
     ]
     resolved_deprecate = (
@@ -745,11 +834,14 @@ def _write_tasks(
     # still composing the list) — resolved to real item_ids here, once, at creation time,
     # so cascading deprecation later is a lookup rather than the model reverse-engineering
     # dependencies from diffs after the fact. An unrecognized slug (hallucinated/typo'd) is
-    # dropped rather than raising, since this is untrusted model output.
-    slug_to_item_id = {item["slug"]: f"task{i}" for i, item in enumerate(data["tasks"], start=1)}
-    # Same "untrusted output, default rather than raise" stance for `repo` — an item naming
-    # a repo that doesn't actually exist in this workspace (hallucinated/stale) falls back
-    # to "." (the task's own effective workspace_path) instead of failing the whole run.
+    # dropped rather than raising, since this is untrusted model output. Numbering
+    # continues from any already-existing items (a prior mastermind's own batch, in a
+    # multi-mastermind task) rather than always starting at task1 — same offset
+    # `_resolve_slug_references` already computes for amendments, needed here too since
+    # `db.append_task_items` (not a restart-at-1 insert) is what persists these.
+    existing = db.get_task_items(task_id)
+    next_n = len(existing) + 1
+    slug_to_item_id = {item["slug"]: f"task{next_n + i}" for i, item in enumerate(data["tasks"])}
     valid_repos = set(discover_repos(Path(workspace_path).expanduser())) if workspace_path else {"."}
     # Same stance again for `skills` — an item can only carry a skill actually registered
     # in ASSISTANT_SKILLS for (this mastermind, this item's own assistant); anything else
@@ -757,21 +849,22 @@ def _write_tasks(
     resolved_tasks = [
         {
             **item,
+            "item_id": f"task{next_n + i}",
             "depends_on": [
                 slug_to_item_id[s] for s in item.get("depends_on", []) if s in slug_to_item_id
             ],
-            "repo": item.get("repo") if item.get("repo") in valid_repos else ".",
+            "repo": _resolve_item_repo(item.get("repo"), valid_repos),
             "skills": [
                 s
                 for s in item.get("skills", [])
                 if s in ASSISTANT_SKILLS.get((mastermind, item["assistant"]), {})
             ],
         }
-        for item in data["tasks"]
+        for i, item in enumerate(data["tasks"])
     ]
     feature_dir = db.PPM_ROOT / project_id / mastermind / "features" / feature_slug
     (feature_dir / "tasks.md").write_text(render_tasks_md(resolved_tasks))
-    db.insert_task_items(task_id, resolved_tasks)
+    db.append_task_items(task_id, resolved_tasks, mastermind=mastermind)
     db.set_task_tasks_ready(task_id, session_id)
 
 
@@ -823,9 +916,7 @@ async def start_run(
     # would leak this dev session's own project-scoped auto-memory into the agent's
     # context, and get --safe-mode to disable this user's global hooks/plugins/CLAUDE.md
     # (e.g. a Ponytail persona hook observed leaking a "prompt injection" preamble into a
-    # real run) without breaking normal OAuth auth, unlike --bare. Assistants deliberately
-    # skip --safe-mode — user decision: normal hooks/plugins should stay active for the
-    # stage that actually writes code.
+    # real run) without breaking normal OAuth auth, unlike --bare.
     extra_env: Dict[str, str] = {}
     if stage == "context":
         cwd: Optional[Path] = db.PPM_ROOT / project_id
@@ -850,8 +941,21 @@ async def start_run(
         if "Bash" in tools_str:
             tool_flags += ["--permission-mode", "acceptEdits", "--settings", _bash_hook_settings()]
             extra_env = {"ENIAC_BACKEND_URL": ENIAC_BACKEND_URL, "ENIAC_RUN_ID": run_id, "ENIAC_TASK_ID": task_id}
-        elif any(t in tools_str for t in ("Edit", "Write")):
-            tool_flags += ["--permission-mode", "acceptEdits"]
+        else:
+            # --safe-mode disables hooks outright -- confirmed live: the exact same
+            # PreToolUse hook, passed via this same --settings mechanism, silently stops
+            # firing under --safe-mode even though it's supplied fresh on this invocation,
+            # not read from the user's own config. So this only ever applies to an
+            # Assistant with no Bash (Design/Implementation/Review today) -- one with Bash
+            # keeps normal hooks/plugins/CLAUDE.md active, since disabling --safe-mode's
+            # hook-suppression would silently remove the per-command approval gate above,
+            # not just the user's own customizations. Eniac's own skills mechanism
+            # (_skills_block) is unaffected either way -- it reads SKILL.md straight off
+            # disk into the prompt string in this Python process, never through the CLI's
+            # own skill-loading, so --safe-mode has nothing to disable there.
+            tool_flags += ["--safe-mode"]
+            if any(t in tools_str for t in ("Edit", "Write")):
+                tool_flags += ["--permission-mode", "acceptEdits"]
     else:
         cwd = None
         tool_flags = []
@@ -862,13 +966,13 @@ async def start_run(
     repo_guidance = ""
     if stage == "tasks" and workspace_path:
         repos = discover_repos(Path(workspace_path).expanduser())
-        if len(repos) > 1:
+        if repos and repos != ["."]:
             repo_list = ", ".join(f"`{r}`" for r in repos)
             repo_guidance = (
-                f"\n\nThis workspace contains multiple repos: {repo_list}. Assign each task "
-                'item to exactly one via an optional "repo" field (e.g. "repo": '
-                '"repos/audit-service") — omit it (or use ".") for anything at the workspace '
-                "root itself."
+                f"\n\nThis workspace's root is not itself a task target — the real repo(s) "
+                f'live under it: {repo_list}. Every task item\'s "repo" field is required — '
+                f'set it to exactly one of these paths (e.g. "repo": "repos/audit-service"). '
+                'There is no workspace-root fallback.'
             )
 
     # Same idea, for whichever skills are actually registered for this domain — a Mastermind
@@ -892,11 +996,16 @@ async def start_run(
                 + "\n".join(catalog_lines)
             )
 
+    model_flags = ["--model", _model_for_stage(stage, assistant)]
+
     if resume_session_id is not None:
         reminder = _RESUME_REMINDERS.get(stage)
         suffix = f"{repo_guidance}{skills_guidance}"
         resumed_prompt = f"{prompt}\n\n---\n\n{reminder}{suffix}" if reminder else f"{prompt}{suffix}"
-        command = ["claude", "-r", resume_session_id, "-p", resumed_prompt, "--output-format", "json", *tool_flags]
+        command = [
+            "claude", "-r", resume_session_id, "-p", resumed_prompt,
+            "--output-format", "json", *tool_flags, *model_flags,
+        ]
     else:
         if stage == "context":
             stage_prompt = SUPERVISOR_PROMPT_PATH.read_text()
@@ -927,7 +1036,7 @@ async def start_run(
         combined_prompt = (
             f"{skill_block}{context_block}{stage_prompt}\n\n---\n\n{label}:\n{prompt}{repo_guidance}{skills_guidance}"
         )
-        command = ["claude", "-p", combined_prompt, "--output-format", "json", *tool_flags]
+        command = ["claude", "-p", combined_prompt, "--output-format", "json", *tool_flags, *model_flags]
 
     process = await asyncio.create_subprocess_exec(
         *command,
@@ -1041,12 +1150,25 @@ async def start_run(
 
                 if data["status"] == "done":
                     db.set_task_item_status(task_id, item_id, "awaiting_review")
+                    # Design has no Edit/Write tools -- its `summary` *is* its deliverable,
+                    # not just a report about one -- so it's also persisted as design.md,
+                    # same PPM feature-directory convention as _write_requirements/
+                    # _write_tasks, for Implementation's execution_prompt to fold in later.
+                    if assistant == "Design":
+                        task_row = db.get_task(task_id)
+                        feature_dir = (
+                            db.PPM_ROOT / project_id / mastermind / "features" / task_row["feature_slug"]
+                        )
+                        feature_dir.mkdir(parents=True, exist_ok=True)
+                        (feature_dir / "design.md").write_text(data["summary"])
                     # An Assistant (Review, today) can propose new task items alongside its
                     # own normal done/report — independent of that report's own approval,
                     # staged the same way a Mastermind consultation's proposal is.
                     new_tasks = data.get("new_tasks")
                     if new_tasks:
-                        resolved_new_tasks, _ = _resolve_slug_references(task_id, new_tasks)
+                        resolved_new_tasks, _ = _resolve_slug_references(
+                            task_id, new_tasks, workspace_path=workspace_path
+                        )
                         db.set_pending_amendment(
                             task_id,
                             {
@@ -1092,7 +1214,7 @@ async def start_run(
                     )
                 else:
                     resolved_new_tasks, resolved_deprecate = _resolve_slug_references(
-                        task_id, data["new_tasks"], data["deprecate_item_ids"]
+                        task_id, data["new_tasks"], data["deprecate_item_ids"], workspace_path=workspace_path
                     )
                     db.set_pending_amendment(
                         task_id,
@@ -1268,7 +1390,11 @@ async def start_context_refresh(run_id: str, project_id: str, workspace_path: st
     errors: List[str] = []
     for label, cwd, target_dir, prompt_text in targets:
         await queue.put(f"Investigating {label}…\n")
-        returncode, transcript = await _run_claude_once(prompt_text, cwd, ["--tools", "Read,Grep,Glob", "--safe-mode"])
+        returncode, transcript = await _run_claude_once(
+            prompt_text,
+            cwd,
+            ["--tools", "Read,Grep,Glob", "--safe-mode", "--model", ROLE_MODELS["context_investigator"]],
+        )
         if returncode != 0:
             errors.append(f"{label}: {_process_failure_reason(returncode, transcript)}")
             continue

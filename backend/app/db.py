@@ -26,6 +26,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     status TEXT NOT NULL,
     feature_slug TEXT,
     masterminds TEXT,
+    mastermind_index INTEGER,
+    mastermind_history TEXT,
     context_confirmed_at TEXT,
     session_id TEXT,
     pending_questions TEXT,
@@ -64,6 +66,7 @@ CREATE TABLE IF NOT EXISTS task_items (
     sort_order INTEGER,
     repo TEXT,
     skills TEXT,
+    mastermind TEXT,
     created_at TEXT NOT NULL,
     PRIMARY KEY (task_id, item_id)
 );
@@ -158,6 +161,8 @@ def init_db() -> None:
         for column in (
             "feature_slug TEXT",
             "masterminds TEXT",
+            "mastermind_index INTEGER",
+            "mastermind_history TEXT",
             "context_confirmed_at TEXT",
             "session_id TEXT",
             "pending_questions TEXT",
@@ -185,6 +190,7 @@ def init_db() -> None:
             "sort_order INTEGER",
             "repo TEXT",
             "skills TEXT",
+            "mastermind TEXT",
         ):
             try:
                 conn.execute(f"ALTER TABLE task_items ADD COLUMN {column}")
@@ -336,6 +342,31 @@ def set_task_requirements_ready(task_id: str, session_id: str) -> None:
         )
 
 
+def advance_task_mastermind(task_id: str, next_index: int, history_entry: Dict[str, Any]) -> None:
+    """Moves a multi-mastermind task on to its next mastermind once the current one's task
+    items are all done — called instead of mark_task_completed whenever
+    `next_index < len(masterminds)`. Appends `history_entry` (the outgoing mastermind's own
+    requirements/tasks approval timestamps, plus a completed_at) to `mastermind_history` so
+    that record isn't lost when the per-cycle approval columns below get reset for the next
+    mastermind. Resets `session_id`/`pending_questions` the same way every other stage
+    transition already does, plus `requirements_approved_at`/`tasks_approved_at` since the
+    next mastermind's requirements/tasks are a fresh, separate approval — `context_confirmed_at`
+    is deliberately left alone, since confirming context is a one-time gate on the
+    Supervisor's overall plan, not something each mastermind re-earns."""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT mastermind_history FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        history = json.loads(row["mastermind_history"]) if row and row["mastermind_history"] else []
+        history.append(history_entry)
+        conn.execute(
+            "UPDATE tasks SET status = 'investigating', mastermind_index = ?, "
+            "mastermind_history = ?, requirements_approved_at = NULL, tasks_approved_at = NULL, "
+            "session_id = NULL, pending_questions = NULL WHERE id = ?",
+            (next_index, json.dumps(history), task_id),
+        )
+
+
 def set_task_planning(task_id: str) -> None:
     with connect() as conn:
         conn.execute("UPDATE tasks SET status = 'planning_tasks' WHERE id = ?", (task_id,))
@@ -413,39 +444,23 @@ def clear_pending_amendment(task_id: str) -> None:
         conn.execute("UPDATE tasks SET pending_amendment = NULL WHERE id = ?", (task_id,))
 
 
-def insert_task_items(task_id: str, items: List[Dict[str, Any]]) -> None:
-    with connect() as conn:
-        for i, item in enumerate(items, start=1):
-            conn.execute(
-                "INSERT INTO task_items (task_id, item_id, slug, description, assistant, status, depends_on, sort_order, repo, skills, created_at) "
-                "VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)",
-                (
-                    task_id,
-                    f"task{i}",
-                    item["slug"],
-                    item["description"],
-                    item["assistant"],
-                    json.dumps(item.get("depends_on", [])),
-                    i,
-                    item.get("repo") or ".",
-                    json.dumps(item.get("skills", [])),
-                    now(),
-                ),
-            )
-
-
 def append_task_items(
-    task_id: str, items: List[Dict[str, Any]], after_item_id: Optional[str] = None
+    task_id: str,
+    items: List[Dict[str, Any]],
+    after_item_id: Optional[str] = None,
+    mastermind: Optional[str] = None,
 ) -> List[str]:
-    """Adds new task items to an already-approved task list — e.g. from an approved
-    tasks.md amendment — continuing item_id numbering rather than restarting at task1
-    (item_id is a stable identity, referenced by depends_on/deprecate_item_ids/diffs, so
-    it never moves). Execution/display order is tracked separately via sort_order: with
-    `after_item_id` (e.g. the Review item that proposed these), the new items are slotted
-    in right after it — a Review-proposed fix should run before whatever was already
-    queued behind the reviewed item, not after it just because its item_id is higher.
-    Without it (e.g. a Mastermind consultation with no single originating item), new items
-    still land at the tail, same as before. Returns the new item_ids in order."""
+    """Adds new task items to an already-approved task list — e.g. an original tasks.md
+    plan, an approved amendment, or the next mastermind's own plan in a multi-mastermind
+    task — continuing item_id numbering rather than restarting at task1 (item_id is a
+    stable identity, referenced by depends_on/deprecate_item_ids/diffs, so it never moves;
+    a second mastermind's own `task1` would otherwise collide with the first mastermind's).
+    Execution/display order is tracked separately via sort_order: with `after_item_id`
+    (e.g. the Review item that proposed these), the new items are slotted in right after
+    it — a Review-proposed fix should run before whatever was already queued behind the
+    reviewed item, not after it just because its item_id is higher. Without it (a fresh
+    plan, a Mastermind consultation, or the next mastermind's own items), new items still
+    land at the tail. Returns the new item_ids in order."""
     with connect() as conn:
         row = conn.execute(
             "SELECT item_id FROM task_items WHERE task_id = ? ORDER BY "
@@ -479,8 +494,8 @@ def append_task_items(
             item_id = f"task{next_n + i}"
             new_item_ids.append(item_id)
             conn.execute(
-                "INSERT INTO task_items (task_id, item_id, slug, description, assistant, status, depends_on, sort_order, repo, created_at) "
-                "VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)",
+                "INSERT INTO task_items (task_id, item_id, slug, description, assistant, status, depends_on, sort_order, repo, skills, mastermind, created_at) "
+                "VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)",
                 (
                     task_id,
                     item_id,
@@ -490,6 +505,8 @@ def append_task_items(
                     json.dumps(item.get("depends_on", [])),
                     anchor + i + 1,
                     item.get("repo") or ".",
+                    json.dumps(item.get("skills", [])),
+                    mastermind,
                     now(),
                 ),
             )

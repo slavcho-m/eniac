@@ -50,7 +50,7 @@ export function ExecutionView({ task, items, onRefetch, onRunStarted }: Executio
   const [error, setError] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
 
-  const mastermind = task.masterminds?.[0];
+  const mastermind = task.current_mastermind;
   const inProgress = items?.find((item) => item.status === "in_progress");
   const awaitingReview = items?.find((item) => item.status === "awaiting_review");
   const blocked = items?.find((item) => item.status === "blocked");

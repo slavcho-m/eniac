@@ -50,6 +50,33 @@ diff/approval UI shows two-file changes, and whether `requirements.md`
 changes need the same `depends_on`/deprecation-cascade treatment or a
 simpler direct-edit model.
 
+## Per-role model tiering is a hardcoded dict, not a setting
+
+**Found:** 2026-08-01, during a token-usage optimization pass.
+
+**What's missing:** `runs.py`'s `ROLE_MODELS` dict hardcodes which Claude model
+each role (Supervisor, Context Investigator, Mastermind, each Assistant) uses
+— there's no UI or API to view/change it, unlike `ASSISTANT_TOOLS`'s sibling
+concept of per-assistant tool grants, which at least has precedent for being
+inspected via the app. A user who wants a different tier (e.g. bump `Decision`
+to Opus, or try `Implementation` on Haiku) has to hand-edit the backend.
+
+**Current workaround:** none — `ROLE_MODELS` in `backend/app/runs.py` is the
+only way to change this, and requires a backend restart to take effect.
+
+**Fix, when it's time:** extend into a real setting — a `model_settings` DB
+table (role -> model), seeded from today's `ROLE_MODELS` values, `GET`/`PUT`
+endpoints, and a settings dialog (there's no global/app-level settings surface
+today, only `ProjectSettingsDialog`, which is per-project — this would be the
+first one). Already scoped in detail once during the optimization pass that
+added `ROLE_MODELS`; re-derive from `_model_for_stage`'s role keys rather than
+starting over. Note `mastermind` must stay a single shared setting across
+requirements/tasks/consultation (not split by stage) — tasks/consultation
+resume the requirements session, and switching models on a resumed call
+forfeits part of the prompt cache (measured live: same-model resume reused
+~27.5k cached tokens for 173 new ones; different-model resume on the same
+session reused only ~15.6k and re-paid ~5k fresh).
+
 ## Resolved
 
 Kept as a record, not open work.

@@ -32,6 +32,7 @@ export { NavListItem } from "./NavListItem/NavListItem";
 export { ProjectSwitcher } from "./ProjectSwitcher/ProjectSwitcher";
 export { CollapsibleSection } from "./CollapsibleSection/CollapsibleSection";
 export { NumberedSteps } from "./NumberedSteps/NumberedSteps";
+export type { StepVariant } from "./NumberedSteps/NumberedSteps";
 export { LinkList } from "./LinkList/LinkList";
 
 export { AppShell } from "./AppShell/AppShell";

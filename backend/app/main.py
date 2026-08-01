@@ -119,6 +119,82 @@ def _effective_workspace_path(project, task) -> Optional[str]:
     return str(Path(base).expanduser() / scope)
 
 
+def _current_mastermind(task) -> str:
+    """Which mastermind is actively driving this task right now. A task can recommend
+    several masterminds in sequence (task["masterminds"], ordered by the Supervisor);
+    task["mastermind_index"] tracks how far through that list we've advanced (NULL/absent
+    on any task predating this column, or still on its first mastermind, both meaning 0)."""
+    masterminds = json.loads(task["masterminds"])
+    return masterminds[task["mastermind_index"] or 0]
+
+
+def _start_next_mastermind(task, task_id: str, masterminds: list, next_index: int) -> str:
+    """Called instead of mark_task_completed once a mastermind's task items are all done
+    and more masterminds remain — kicks off the next one's requirements stage. Mirrors
+    confirm_context's fresh (non-resumed) requirements-stage start, but for masterminds[1:]:
+    context.md is copied into the new mastermind's own features/<slug>/ dir (keeping the
+    existing convention that each domain's PPM folder is self-contained), and the prompt
+    gets a section inlining every already-completed mastermind's requirements.md/tasks.md —
+    same "inline the actual file content" pattern _project_context_block already uses for
+    architecture.md/conventions.md, rather than pointing at a path the mastermind's own
+    tools may not have access to — so this mastermind doesn't plan in isolation and end up
+    contradicting or duplicating what's already committed to."""
+    previous_mastermind = masterminds[task["mastermind_index"] or 0]
+    next_mastermind = masterminds[next_index]
+    feature_slug = task["feature_slug"]
+    project_id = task["project_id"]
+
+    prev_dir = db.PPM_ROOT / project_id / previous_mastermind / "features" / feature_slug
+    next_dir = db.PPM_ROOT / project_id / next_mastermind / "features" / feature_slug
+    next_dir.mkdir(parents=True, exist_ok=True)
+    context_md = (prev_dir / "context.md").read_text()
+    (next_dir / "context.md").write_text(context_md)
+
+    prior_sections = []
+    for m in masterminds[:next_index]:
+        m_dir = db.PPM_ROOT / project_id / m / "features" / feature_slug
+        requirements_md = (m_dir / "requirements.md").read_text() if (m_dir / "requirements.md").exists() else ""
+        tasks_md = (m_dir / "tasks.md").read_text() if (m_dir / "tasks.md").exists() else ""
+        prior_sections.append(f"### {m} (already completed)\n\n{requirements_md}\n\n{tasks_md}")
+    prior_block = (
+        "\n\n---\n\n## Earlier Mastermind(s) In This Feature\n\nThis feature also involves "
+        "other mastermind(s), already completed — their requirements and tasks are below. "
+        "Read what they committed to before writing your own requirements, so your plan "
+        "doesn't duplicate or conflict with theirs.\n\n" + "\n\n".join(prior_sections)
+    )
+    prompt = context_md + prior_block
+
+    project = db.get_project(project_id)
+    workspace_path = _effective_workspace_path(project, task)
+    if not workspace_path or not Path(workspace_path).expanduser().is_dir():
+        raise HTTPException(409, "workspace_path is missing or no longer exists")
+
+    history_entry = {
+        "mastermind": previous_mastermind,
+        "requirements_approved_at": task["requirements_approved_at"],
+        "tasks_approved_at": task["tasks_approved_at"],
+        "completed_at": db.now(),
+    }
+    db.advance_task_mastermind(task_id, next_index, history_entry)
+
+    run_id = runs.new_run_id("requirements", feature_slug)
+    db.insert_run(run_id, task_id, "requirements")
+    _fire_and_forget(
+        run_id,
+        runs.start_run(
+            run_id,
+            task_id,
+            project_id,
+            prompt,
+            "requirements",
+            mastermind=next_mastermind,
+            workspace_path=workspace_path,
+            repo_scope=task["repo_scope"],
+        ),
+    )
+    return run_id
+
+
 def _git_status_porcelain(workspace_path: str) -> Optional[str]:
     """None if not a git repo; otherwise `git status --porcelain` output (empty = clean)."""
     result = subprocess.run(
@@ -368,6 +444,10 @@ def _serialize_task(task) -> dict:
         "status": task["status"],
         "feature_slug": task["feature_slug"],
         "masterminds": json.loads(task["masterminds"]) if task["masterminds"] else None,
+        "current_mastermind": _current_mastermind(task) if task["masterminds"] else None,
+        "mastermind_history": (
+            json.loads(task["mastermind_history"]) if task["mastermind_history"] else []
+        ),
         "context_confirmed_at": task["context_confirmed_at"],
         "requirements_approved_at": task["requirements_approved_at"],
         "tasks_approved_at": task["tasks_approved_at"],
@@ -425,31 +505,41 @@ def list_task_files(task_id: str):
     if task["feature_slug"] is None:
         return []
 
-    first_mastermind = json.loads(task["masterminds"])[0]
-    feature_dir = db.PPM_ROOT / task["project_id"] / first_mastermind / "features" / task["feature_slug"]
+    masterminds = json.loads(task["masterminds"])
+    current_index = task["mastermind_index"] or 0
+    multi = len(masterminds) > 1
 
     files = []
-    for name in CANONICAL_FEATURE_FILES:
-        file_path = feature_dir / name
-        exists = file_path.is_file()
-        if task[_APPROVED_AT_FIELD_BY_FILE[name]]:
-            status = "approved"
-        elif exists and task["status"] == _READY_STATUS_BY_FILE[name]:
-            status = "awaiting_approval"
-        else:
-            status = "draft"
-        files.append(
-            {
-                "name": name,
-                "path": str(file_path.relative_to(db.PPM_ROOT)),
-                "status": status,
-                "modified_at": (
-                    datetime.fromtimestamp(file_path.stat().st_mtime, tz=timezone.utc).isoformat()
-                    if exists
-                    else None
-                ),
-            }
-        )
+    for i, mastermind in enumerate(masterminds[: current_index + 1]):
+        is_current = i == current_index
+        feature_dir = db.PPM_ROOT / task["project_id"] / mastermind / "features" / task["feature_slug"]
+        for name in CANONICAL_FEATURE_FILES:
+            file_path = feature_dir / name
+            exists = file_path.is_file()
+            if is_current:
+                if task[_APPROVED_AT_FIELD_BY_FILE[name]]:
+                    status = "approved"
+                elif exists and task["status"] == _READY_STATUS_BY_FILE[name]:
+                    status = "awaiting_approval"
+                else:
+                    status = "draft"
+            else:
+                # An earlier mastermind in a multi-mastermind sequence only ever advances
+                # once its own requirements/tasks were both approved, so its files are
+                # already settled by the time it shows up here.
+                status = "approved" if exists else "draft"
+            files.append(
+                {
+                    "name": f"{mastermind}/{name}" if multi else name,
+                    "path": str(file_path.relative_to(db.PPM_ROOT)),
+                    "status": status,
+                    "modified_at": (
+                        datetime.fromtimestamp(file_path.stat().st_mtime, tz=timezone.utc).isoformat()
+                        if exists
+                        else None
+                    ),
+                }
+            )
     return files
 
 
@@ -473,8 +563,10 @@ async def respond(task_id: str, body: RespondBody):
     extra: dict = {}
     if stage != "context":
         project = db.get_project(task["project_id"])
-        masterminds = json.loads(task["masterminds"])
-        extra = {"mastermind": masterminds[0], "workspace_path": _effective_workspace_path(project, task)}
+        extra = {
+            "mastermind": _current_mastermind(task),
+            "workspace_path": _effective_workspace_path(project, task),
+        }
 
     run_id = runs.new_run_id(stage, body.answer)
     db.insert_run(run_id, task_id, stage)
@@ -557,8 +649,7 @@ async def confirm_context(task_id: str):
     if task["context_confirmed_at"] is not None:
         raise HTTPException(409, "context already confirmed")
 
-    masterminds = json.loads(task["masterminds"])
-    first_mastermind = masterminds[0]
+    first_mastermind = _current_mastermind(task)
     context_path = (
         db.PPM_ROOT / task["project_id"] / first_mastermind / "features" / task["feature_slug"] / "context.md"
     )
@@ -606,8 +697,7 @@ async def approve_requirements(task_id: str):
     if task["status"] != "requirements_ready":
         raise HTTPException(409, f"requirements not ready (status: {task['status']})")
 
-    masterminds = json.loads(task["masterminds"])
-    first_mastermind = masterminds[0]
+    first_mastermind = _current_mastermind(task)
     requirements_path = (
         db.PPM_ROOT / task["project_id"] / first_mastermind / "features" / task["feature_slug"] / "requirements.md"
     )
@@ -652,8 +742,7 @@ def approve_tasks(task_id: str):
     if task["tasks_approved_at"] is not None:
         raise HTTPException(409, "tasks already approved")
 
-    masterminds = json.loads(task["masterminds"])
-    first_mastermind = masterminds[0]
+    first_mastermind = _current_mastermind(task)
     tasks_path = (
         db.PPM_ROOT / task["project_id"] / first_mastermind / "features" / task["feature_slug"] / "tasks.md"
     )
@@ -676,8 +765,11 @@ async def approve_assistant(task_id: str, body: Optional[ApproveAssistantBody] =
     if item is None:
         raise HTTPException(409, "no pending task items")
 
-    masterminds = json.loads(task["masterminds"])
-    first_mastermind = masterminds[0]
+    # The item's own recorded mastermind (which mastermind's tasks.md actually produced
+    # it) rather than the task's current index — normally identical, since pending items
+    # only ever belong to whichever mastermind is currently active, but this stays correct
+    # even for an older item predating the `mastermind` column (falls back to current).
+    first_mastermind = item["mastermind"] or _current_mastermind(task)
 
     assistant = item["assistant"]
     override = body.assistant if body else None
@@ -727,8 +819,33 @@ async def approve_assistant(task_id: str, body: Optional[ApproveAssistantBody] =
         db.PPM_ROOT / task["project_id"] / first_mastermind / "features" / task["feature_slug"] / "requirements.md"
     )
     requirements_md = requirements_path.read_text() if requirements_path.exists() else ""
+    # A Design item for this same feature may already have produced a design.md -- folded
+    # in here too so every later assistant (Implementation, typically) sees it, same
+    # existence-checked read as requirements.md above; absent (most tasks skip Design
+    # entirely) this is a no-op and the prompt is unchanged from before design.md existed.
+    design_path = (
+        db.PPM_ROOT / task["project_id"] / first_mastermind / "features" / task["feature_slug"] / "design.md"
+    )
+    design_md = design_path.read_text() if design_path.exists() else ""
+    design_section = f"## Design\n\n{design_md}\n\n---\n\n" if design_md else ""
+    # Whatever earlier items in this task already did to this repo -- so Review/Test (no
+    # Grep/Glob anymore) don't need to discover "what changed" themselves, and a later
+    # Implementation item sees exactly what a prior one already built instead of re-reading
+    # those files to find out. Same diff `GET /tasks/{id}/diff` already computes for the
+    # frontend's "View All Changes" button, reused here; empty/no-op for the first item to
+    # touch this repo, since there's no prior baseline yet.
+    prior_baseline = db.get_task_baseline_commits_by_repo(task_id).get(item_repo)
+    changes_so_far = (
+        runs.working_tree_diff(Path(workspace_path).expanduser(), since=prior_baseline)
+        if prior_baseline
+        else ""
+    )
+    changes_section = f"## Changes So Far\n\n```diff\n{changes_so_far}\n```\n\n---\n\n" if changes_so_far else ""
     execution_prompt = (
-        f"## Full Requirements\n\n{requirements_md}\n\n---\n\n## Your Task Item\n\n{item['description']}"
+        f"## Full Requirements\n\n{requirements_md}\n\n---\n\n"
+        f"{design_section}"
+        f"{changes_section}"
+        f"## Your Task Item\n\n{item['description']}"
     )
 
     # Checkpoint the tree before this item's own changes — earlier items in this same task
@@ -784,14 +901,22 @@ async def review_artifact(task_id: str, body: ReviewArtifactBody):
 
     if body.approved:
         db.set_task_item_status(task_id, item["item_id"], "done")
-        task_completed = db.all_task_items_done(task_id)
-        if task_completed:
-            db.mark_task_completed(task_id)
+        task_completed = False
+        run_id = None
+        if db.all_task_items_done(task_id):
+            masterminds = json.loads(task["masterminds"])
+            next_index = (task["mastermind_index"] or 0) + 1
+            if next_index < len(masterminds):
+                run_id = _start_next_mastermind(task, task_id, masterminds, next_index)
+            else:
+                db.mark_task_completed(task_id)
+                task_completed = True
         return {
             "task_id": task_id,
             "item_id": item["item_id"],
             "status": "done",
             "task_completed": task_completed,
+            **({"run_id": run_id} if run_id else {}),
         }
 
     if not body.feedback:
@@ -809,8 +934,7 @@ async def review_artifact(task_id: str, body: ReviewArtifactBody):
     if item["baseline_commit"]:
         runs.restore_checkpoint(workspace_path, item["baseline_commit"])
 
-    masterminds = json.loads(task["masterminds"])
-    first_mastermind = masterminds[0]
+    first_mastermind = item["mastermind"] or _current_mastermind(task)
 
     run_id = runs.new_run_id("execution", f"{task['feature_slug']}-{item['item_id']}")
     db.insert_run(run_id, task_id, "execution", item_id=item["item_id"])
@@ -895,8 +1019,7 @@ def get_amendment(task_id: str):
     if amendment.get("kind") == "clarification":
         return {"task_id": task_id, **amendment}
 
-    masterminds = json.loads(task["masterminds"])
-    tasks_path = _tasks_md_path(task, masterminds[0])
+    tasks_path = _tasks_md_path(task, _current_mastermind(task))
     current_md = tasks_path.read_text() if tasks_path.exists() else ""
     proposed_md = runs.render_tasks_md(_amendment_render_items(task_id, amendment))
     diff = runs.text_diff(current_md, proposed_md, "tasks.md")
@@ -915,8 +1038,7 @@ def approve_amendment(task_id: str):
     if amendment.get("kind") == "clarification":
         raise HTTPException(409, "this is a clarification question, not a proposal — answer it via reject-amendment")
 
-    masterminds = json.loads(task["masterminds"])
-    tasks_path = _tasks_md_path(task, masterminds[0])
+    tasks_path = _tasks_md_path(task, _current_mastermind(task))
 
     deprecate_ids = amendment.get("deprecate_item_ids", [])
     reasoning = amendment.get("reasoning") or "Superseded by an approved amendment."
@@ -924,7 +1046,10 @@ def approve_amendment(task_id: str):
         db.set_task_item_deprecated(task_id, item_id, reasoning)
 
     new_item_ids = db.append_task_items(
-        task_id, amendment.get("new_tasks", []), after_item_id=amendment.get("origin_item_id")
+        task_id,
+        amendment.get("new_tasks", []),
+        after_item_id=amendment.get("origin_item_id"),
+        mastermind=_current_mastermind(task),
     )
     # Re-render from the now-updated DB state (deprecation + new items already applied
     # above) — pass an empty amendment since _amendment_render_items falls back to each
@@ -953,8 +1078,7 @@ async def reject_amendment(task_id: str, body: RejectAmendmentBody):
 
     db.clear_pending_amendment(task_id)
 
-    masterminds = json.loads(task["masterminds"])
-    first_mastermind = masterminds[0]
+    first_mastermind = _current_mastermind(task)
     project = db.get_project(task["project_id"])
     workspace_path = _effective_workspace_path(project, task)
 
@@ -1009,8 +1133,7 @@ async def consult_mastermind(task_id: str, body: ConsultMastermindBody):
     if not body.message:
         raise HTTPException(400, "message is required")
 
-    masterminds = json.loads(task["masterminds"])
-    first_mastermind = masterminds[0]
+    first_mastermind = _current_mastermind(task)
     project = db.get_project(task["project_id"])
     workspace_path = _effective_workspace_path(project, task)
     if not workspace_path or not Path(workspace_path).expanduser().is_dir():
@@ -1048,6 +1171,7 @@ def _serialize_task_item(item, task_id: str) -> dict:
         "depends_on": json.loads(item["depends_on"]) if item["depends_on"] else [],
         "repo": item["repo"] or ".",
         "skills": json.loads(item["skills"]) if item["skills"] else [],
+        "mastermind": item["mastermind"],
         "latest_run": (
             {
                 "id": latest_run["id"],

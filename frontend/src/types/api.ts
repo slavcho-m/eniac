@@ -41,7 +41,22 @@ export interface Task {
   prompt: string;
   status: TaskStatus;
   feature_slug: string | null;
+  /** Every mastermind the Supervisor recommended, in the order they run. Only the first
+   * entry runs at a time -- see current_mastermind for which one that is right now. */
   masterminds: Mastermind[] | null;
+  /** Whichever mastermind is actively driving this task right now (masterminds[index] on
+   * the backend). Null iff masterminds is null. Use this, not masterminds[0], anywhere
+   * that needs "the" mastermind -- a multi-mastermind task cycles through more than one. */
+  current_mastermind: Mastermind | null;
+  /** Masterminds already completed their pass, in order, each with its own
+   * requirements/tasks approval timestamps -- current_mastermind's own approval state
+   * lives in requirements_approved_at/tasks_approved_at below until it too advances. */
+  mastermind_history: {
+    mastermind: Mastermind;
+    requirements_approved_at: string | null;
+    tasks_approved_at: string | null;
+    completed_at: string;
+  }[];
   context_confirmed_at: string | null;
   requirements_approved_at: string | null;
   tasks_approved_at: string | null;
@@ -82,6 +97,8 @@ export interface TaskItem {
    * "." for the ordinary case (single-repo project, or a node-scoped task) -- only a real
    * value on an orchestrator-root task whose Mastermind assigned items across repos. */
   repo: string;
+  /** Which mastermind's plan produced this item -- null for an item predating this field. */
+  mastermind: Mastermind | null;
   latest_run: TaskItemLatestRun | null;
 }
 
