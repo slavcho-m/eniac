@@ -9,6 +9,7 @@ import { dateGroupLabel, formatRelativeTime } from "@/lib/formatRelativeTime";
 import type { Task } from "@/types/api";
 import { DeleteProjectDialog } from "./DeleteProjectDialog";
 import { ProjectSettingsDialog } from "./ProjectSettingsDialog";
+import styles from "./Sidebar.module.css";
 
 interface SidebarProps {
   /** Bump to force the task list to refetch — e.g. pass task.status from TaskDetailPage
@@ -67,7 +68,9 @@ export function Sidebar({ refreshKey }: SidebarProps) {
       <NavListItem
         key={task.id}
         icon={<CheckSquare size={15} strokeWidth={1.75} />}
-        label={task.feature_slug ?? task.prompt}
+        label={
+          task.title ?? task.feature_slug ?? <span className={styles.titleSkeleton} aria-label="Generating title…" />
+        }
         meta={formatRelativeTime(task.created_at)}
         active={task.id === taskId}
         onClick={() => navigate(`/projects/${projectId}/tasks/${task.id}`)}

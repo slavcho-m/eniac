@@ -8,6 +8,8 @@ export { SectionLabel } from "./SectionLabel/SectionLabel";
 export { TextInput } from "./TextInput/TextInput";
 export { Textarea } from "./Textarea/Textarea";
 export { PromptInput } from "./PromptInput/PromptInput";
+export { ModeSelect } from "./ModeSelect/ModeSelect";
+export type { TaskMode } from "./ModeSelect/ModeSelect";
 export { FeedbackForm } from "./FeedbackForm/FeedbackForm";
 export { Checkbox } from "./Checkbox/Checkbox";
 

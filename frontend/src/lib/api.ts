@@ -10,6 +10,8 @@ import type {
   TaskAmendment,
   TaskFile,
   TaskItem,
+  TaskMode,
+  TaskRun,
 } from "@/types/api";
 
 const BASE_URL = import.meta.env.VITE_BACKEND_URL;
@@ -101,10 +103,11 @@ export function createTask(
   prompt: string,
   repoScope?: string,
   imagePaths?: string[],
+  mode?: TaskMode,
 ): Promise<{ task_id: string; run_id: string }> {
   return request(`/projects/${projectId}/tasks`, {
     method: "POST",
-    body: JSON.stringify({ prompt, repo_scope: repoScope, image_paths: imagePaths }),
+    body: JSON.stringify({ prompt, repo_scope: repoScope, image_paths: imagePaths, mode }),
   });
 }
 
@@ -142,10 +145,14 @@ export function deleteTask(taskId: string): Promise<{ id: string; deleted: true 
 
 // --- Task lifecycle actions ---
 
-export function respondToTask(taskId: string, answer: string): Promise<{ task_id: string; run_id: string }> {
+export function respondToTask(
+  taskId: string,
+  answer: string,
+  imagePaths?: string[],
+): Promise<{ task_id: string; run_id: string }> {
   return request(`/tasks/${taskId}/respond`, {
     method: "POST",
-    body: JSON.stringify({ answer }),
+    body: JSON.stringify({ answer, image_paths: imagePaths }),
   });
 }
 
@@ -255,6 +262,10 @@ export function getTaskItems(taskId: string): Promise<TaskItem[]> {
 
 export function getTaskDiff(taskId: string): Promise<{ diff: string }> {
   return request(`/tasks/${taskId}/diff`);
+}
+
+export function getTaskRuns(taskId: string): Promise<TaskRun[]> {
+  return request(`/tasks/${taskId}/runs`);
 }
 
 // --- Files ---

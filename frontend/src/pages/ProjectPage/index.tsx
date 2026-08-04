@@ -1,10 +1,12 @@
 import { X } from "lucide-react";
 import { useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { AppShell, Badge, Button, PromptInput, SectionLabel } from "@/components";
+import { AppShell, Badge, Button, ModeSelect, PromptInput, SectionLabel } from "@/components";
+import type { TaskMode } from "@/components";
+import { useImageAttachments } from "@/hooks/useImageAttachments";
 import { useProject } from "@/hooks/useProject";
 import { Sidebar } from "@/layout/Sidebar";
-import { ApiError, createTask, refreshProjectContext, uploadProjectImage } from "@/lib/api";
+import { ApiError, createTask, refreshProjectContext } from "@/lib/api";
 import { FilesPanel } from "../TaskDetailPage/FilesPanel";
 import { LiveRunView } from "../TaskDetailPage/LiveRunView";
 import { RepoGraph } from "./RepoGraph";
@@ -12,14 +14,6 @@ import { RepoGraph } from "./RepoGraph";
 interface PendingTask {
   taskId: string;
   runId: string;
-}
-
-interface AttachedImage {
-  id: string;
-  filename: string;
-  path?: string;
-  uploading: boolean;
-  error?: string;
 }
 
 /**
@@ -39,12 +33,14 @@ export function ProjectPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const { data: project, refetch: refetchProject } = useProject(projectId);
   const [prompt, setPrompt] = useState("");
+  const [mode, setMode] = useState<TaskMode>("ship");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState<PendingTask | null>(null);
   const [refreshRunId, setRefreshRunId] = useState<string | null>(null);
   const [refreshError, setRefreshError] = useState<string | null>(null);
-  const [images, setImages] = useState<AttachedImage[]>([]);
+  const { images, handleFilesSelected, removeImage, imagePaths, imagesStillUploading } =
+    useImageAttachments(projectId);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const selectedNode = searchParams.get("node");
@@ -53,28 +49,6 @@ export function ProjectPage() {
     setSearchParams(node ? { node } : {});
   }
 
-  function handleFilesSelected(fileList: FileList | null) {
-    if (!projectId || !fileList) return;
-    for (const file of fileList) {
-      const id = crypto.randomUUID();
-      setImages((prev) => [...prev, { id, filename: file.name, uploading: true }]);
-      uploadProjectImage(projectId, file)
-        .then(({ path }) => {
-          setImages((prev) => prev.map((img) => (img.id === id ? { ...img, path, uploading: false } : img)));
-        })
-        .catch((err: unknown) => {
-          const message = err instanceof ApiError ? err.message : "Upload failed.";
-          setImages((prev) => prev.map((img) => (img.id === id ? { ...img, uploading: false, error: message } : img)));
-        });
-    }
-  }
-
-  function removeImage(id: string) {
-    setImages((prev) => prev.filter((img) => img.id !== id));
-  }
-
-  const imagesStillUploading = images.some((img) => img.uploading);
-
   async function handleSubmit() {
     if (!projectId) return;
     const trimmed = prompt.trim();
@@ -82,8 +56,7 @@ export function ProjectPage() {
     setSubmitting(true);
     setError(null);
     try {
-      const imagePaths = images.flatMap((img) => (img.path ? [img.path] : []));
-      const result = await createTask(projectId, trimmed, selectedNode ?? undefined, imagePaths);
+      const result = await createTask(projectId, trimmed, selectedNode ?? undefined, imagePaths, mode);
       setPending({ taskId: result.task_id, runId: result.run_id });
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Failed to create task.");
@@ -244,6 +217,9 @@ export function ProjectPage() {
               onSubmit={handleSubmit}
               onAttach={() => fileInputRef.current?.click()}
               onDropFiles={handleFilesSelected}
+              modeSelect={
+                <ModeSelect value={mode} onChange={setMode} disabled={submitting || imagesStillUploading} />
+              }
               disabled={submitting || imagesStillUploading}
             />
           </div>

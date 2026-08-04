@@ -14,6 +14,7 @@ from . import db
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SUPERVISOR_PROMPT_PATH = REPO_ROOT / "agents" / "supervisor" / "prompt.md"
+DISCUSSION_PROMPT_PATH = REPO_ROOT / "agents" / "discussion" / "prompt.md"
 CONTEXT_INVESTIGATOR_PROMPT_PATH = REPO_ROOT / "agents" / "context-investigator" / "prompt.md"
 MASTERMINDS_DIR = REPO_ROOT / "agents" / "masterminds"
 ASSISTANTS_DIR = REPO_ROOT / "agents" / "assistants"
@@ -94,7 +95,7 @@ def _model_for_stage(stage: str, assistant: Optional[str] = None) -> str:
     the Supervisor; "requirements"/"tasks"/"consultation" all share the single
     "mastermind" entry (see ROLE_MODELS' docstring-comment for why); "execution" is keyed
     by the assistant's own name, same granularity as ASSISTANT_TOOLS."""
-    if stage == "context":
+    if stage in ("context", "discuss"):
         return ROLE_MODELS["supervisor"]
     if stage in ("requirements", "tasks", "consultation"):
         return ROLE_MODELS["mastermind"]
@@ -227,6 +228,7 @@ def _skills_block(skill_names: List[str]) -> str:
 # introduces it minimally, overridable via env, defaulting to the documented dev port.
 ENIAC_BACKEND_URL = os.environ.get("ENIAC_BACKEND_URL", "http://localhost:1946")
 BASH_GATE_HOOK_PATH = REPO_ROOT / "agents" / "hooks" / "bash_gate.py"
+WRITE_GATE_HOOK_PATH = REPO_ROOT / "agents" / "hooks" / "write_gate.py"
 
 
 def _bash_hook_settings() -> str:
@@ -240,6 +242,26 @@ def _bash_hook_settings() -> str:
                     {
                         "matcher": "Bash",
                         "hooks": [{"type": "command", "command": f"python3 {BASH_GATE_HOOK_PATH}"}],
+                    }
+                ]
+            }
+        }
+    )
+
+
+def _write_gate_settings() -> str:
+    """Same mechanism as `_bash_hook_settings`, for Discuss mode's Write tool instead --
+    confirmed via a live spike that a declarative `--settings` permissions.deny path rule
+    is silently ignored under --permission-mode acceptEdits (the write went through anyway),
+    while a real PreToolUse hook reliably blocks it. See write_gate.py for the actual check
+    (path-containment against ENIAC_DISCUSSION_SANDBOX, set via this call's extra_env)."""
+    return json.dumps(
+        {
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "Write",
+                        "hooks": [{"type": "command", "command": f"python3 {WRITE_GATE_HOOK_PATH}"}],
                     }
                 ]
             }
@@ -888,6 +910,45 @@ def _write_tasks(
     db.set_task_tasks_ready(task_id, session_id)
 
 
+TITLE_PROMPT_TEMPLATE = (
+    "Summarize the following user request as a short task title: 3-6 words, plain text, "
+    "no ending punctuation, no quotation marks, no markdown. Reply with only the title.\n\n"
+    "Request:\n{prompt}"
+)
+
+
+async def generate_title(task_id: str, project_id: str, prompt: str) -> None:
+    """Fire-and-forget: a cheap haiku call producing a short sidebar label. Deliberately
+    outside the start_run/stage/queue/WebSocket machinery entirely -- it has no run_id, is
+    never watched live, and never touches task.status. The frontend only ever learns the
+    result by polling GET /tasks (see useProjectTasks) until `title` is no longer null.
+
+    On any failure this just returns, leaving `title` NULL forever -- no retry. The
+    sidebar's existing feature_slug/prompt fallback already covers that case permanently,
+    so a stuck-forever loading state is never possible.
+    """
+    command = [
+        "claude", "-p", TITLE_PROMPT_TEMPLATE.format(prompt=prompt),
+        "--output-format", "json", "--model", "haiku", "--tools", "", "--safe-mode",
+    ]
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+        cwd=db.PPM_ROOT / project_id,
+    )
+    stdout, _ = await process.communicate()
+    if process.returncode != 0:
+        return
+    try:
+        wrapper = json.loads(stdout.decode(errors="replace"))
+        title = wrapper["result"].strip().strip("\"'").splitlines()[0][:80]
+    except Exception:
+        return
+    if title:
+        db.set_task_title(task_id, title)
+
+
 async def start_run(
     run_id: str,
     task_id: str,
@@ -942,6 +1003,37 @@ async def start_run(
     if stage == "context":
         cwd: Optional[Path] = db.PPM_ROOT / project_id
         tool_flags = ["--tools", "", "--safe-mode"]
+    elif stage == "discuss":
+        # cwd stays a per-task sandbox outside any real repo regardless of workspace_path --
+        # Write is only ever offered relative to/within reach of that sandbox in spirit, and
+        # is *enforced* there by write_gate.py (a real PreToolUse hook, not just cwd
+        # convention -- confirmed via live spike that a declarative --settings deny rule for
+        # a path is silently ignored under acceptEdits, but a hook reliably blocks it). No
+        # --safe-mode here (unlike every other stage) -- --safe-mode silently disables hooks
+        # entirely, which would disable write_gate.py itself; this trades away this stage's
+        # protection from the user's own global hooks/plugins/CLAUDE.md leaking in, the same
+        # tradeoff already accepted for Bash-capable execution-stage Assistants below.
+        cwd = db.PPM_ROOT / project_id / "discussions" / task_id
+        cwd.mkdir(parents=True, exist_ok=True)
+        tools = ["WebSearch", "Write"]
+        add_dir_flags: List[str] = []
+        if workspace_path and Path(workspace_path).expanduser().is_dir():
+            # Read-only codebase access, added only when there's an actual workspace to
+            # read -- a greenfield project with no workspace_path behaves exactly as before
+            # (chat + search + sandboxed write, nothing to read).
+            tools += ["Read", "Grep", "Glob"]
+            add_dir_flags = ["--add-dir", str(Path(workspace_path).expanduser())]
+        if image_paths and "Read" not in tools:
+            # An attached image needs Read regardless of workspace access -- a greenfield
+            # project (no workspace_path) can still have a screenshot attached to it.
+            tools.append("Read")
+        tool_flags = [
+            "--tools", ",".join(tools),
+            "--permission-mode", "acceptEdits",
+            "--settings", _write_gate_settings(),
+            *add_dir_flags,
+        ]
+        extra_env = {"ENIAC_DISCUSSION_SANDBOX": str(cwd)}
     elif stage in ("requirements", "tasks", "consultation"):
         assert workspace_path is not None
         cwd = Path(workspace_path).expanduser()
@@ -984,6 +1076,19 @@ async def start_run(
     # Only the tasks stage ever needs to know about multiple repos, and only when the
     # workspace actually has more than one — an ordinary single-repo project's tasks-stage
     # prompt stays exactly as it always has, no new text to think about.
+    # Discuss mode's cwd is deliberately the sandbox dir, not the workspace (so Write's
+    # gated-by-cwd-convention story stays simple) -- the workspace is only reachable via
+    # --add-dir, which grants *permission* to read it but tells the model nothing about
+    # *where* it is. Without this, a live check found the model correctly ran Glob, found
+    # nothing (searching its own empty cwd), and concluded the codebase didn't exist.
+    workspace_guidance = ""
+    if stage == "discuss" and workspace_path and Path(workspace_path).expanduser().is_dir():
+        workspace_guidance = (
+            f"\n\nThis project's codebase is available to you, read-only, at: "
+            f"{Path(workspace_path).expanduser()} — use Read/Grep/Glob there (not your own "
+            "current directory) whenever a question is about the actual project."
+        )
+
     repo_guidance = ""
     if stage == "tasks" and workspace_path:
         repos = discover_repos(Path(workspace_path).expanduser())
@@ -1019,24 +1124,49 @@ async def start_run(
 
     model_flags = ["--model", _model_for_stage(stage, assistant)]
 
+    # "requirements" only ever gets image_paths on its fresh call in practice (nothing on
+    # the resume path passes them), so this being computed once here rather than only in
+    # the fresh branch below is a no-op widening for that stage -- unlike "discuss", whose
+    # follow-ups are genuinely new turns that might each bring a different image, so this
+    # has to be available to both the fresh and resumed paths.
+    images_block = ""
+    image_dir_flags: List[str] = []
+    if stage in ("requirements", "discuss") and image_paths:
+        image_list = "\n".join(f"- `{p}`" for p in image_paths)
+        images_block = (
+            "\n\nThe user attached the following image file(s) with this message. Use "
+            f"the Read tool to view any that are relevant:\n{image_list}"
+        )
+        # Read being in --tools isn't enough on its own for a path outside this stage's own
+        # cwd -- found live: the attachments dir lives under PPM_ROOT, so a Read call
+        # against it was denied even with Read granted, same class of non-interactive-mode
+        # gap as Edit/Write needing acceptEdits above, just for out-of-cwd reads
+        # specifically. --add-dir grants exactly those directories without loosening
+        # anything else.
+        image_dirs = sorted({str(Path(p).parent) for p in image_paths})
+        for d in image_dirs:
+            image_dir_flags += ["--add-dir", d]
+
     if resume_session_id is not None:
         reminder = _RESUME_REMINDERS.get(stage)
-        suffix = f"{repo_guidance}{skills_guidance}"
+        suffix = f"{repo_guidance}{skills_guidance}{images_block}"
         resumed_prompt = f"{prompt}\n\n---\n\n{reminder}{suffix}" if reminder else f"{prompt}{suffix}"
         command = [
             "claude", "-r", resume_session_id, "-p", resumed_prompt,
-            "--output-format", "json", *tool_flags, *model_flags,
+            "--output-format", "json", *tool_flags, *model_flags, *image_dir_flags,
         ]
     else:
         if stage == "context":
             stage_prompt = SUPERVISOR_PROMPT_PATH.read_text()
+        elif stage == "discuss":
+            stage_prompt = DISCUSSION_PROMPT_PATH.read_text()
         elif stage == "execution":
             assert mastermind is not None and assistant is not None
             stage_prompt = assistant_prompt_path(mastermind, assistant).read_text()
         else:
             assert mastermind is not None
             stage_prompt = mastermind_prompt_path(mastermind).read_text()
-        label = "User request" if stage == "context" else "Input"
+        label = "User request" if stage in ("context", "discuss") else "Input"
         # A prior project-context refresh's architecture.md/conventions.md, if any —
         # silent no-op for a project that's never run one. Only ever populated on this
         # fresh-call path: "tasks"/"consultation" always resume the "requirements"
@@ -1046,38 +1176,18 @@ async def start_run(
         # Assistants under "execution" get it exactly the same way the Masterminds do,
         # just scoped by `repo_scope` being the task *item's* own repo (passed by the
         # caller) rather than the task's.
-        context_block = (
-            _project_context_block(project_id, repo_scope, mastermind)
-            if stage in ("requirements", "tasks", "consultation", "execution")
-            else ""
-        )
+        if stage in ("requirements", "tasks", "consultation", "execution"):
+            context_block = _project_context_block(project_id, repo_scope, mastermind)
+        elif stage == "discuss":
+            context_block = _discussion_context_block(project_id, repo_scope)
+        else:
+            context_block = ""
         # Only fires on this same fresh-call path as context_block, for the same reason:
         # a reject/retry resumes the item's own prior session, which already saw this.
         skill_block = _skills_block(skills or []) if stage == "execution" else ""
-        # Only the "requirements" stage's fresh call needs this — "tasks"/"consultation"
-        # resume that same Mastermind session via -r, so an image read here once is already
-        # in that session's own transcript history by the time those resume, same reasoning
-        # as context_block/skill_block above.
-        images_block = ""
-        image_dir_flags: List[str] = []
-        if stage == "requirements" and image_paths:
-            image_list = "\n".join(f"- `{p}`" for p in image_paths)
-            images_block = (
-                "\n\nThe user attached the following image file(s) with this request. Use "
-                f"the Read tool to view any that are relevant to understanding the task:\n{image_list}"
-            )
-            # Read being in --tools isn't enough on its own for a path outside this stage's
-            # own cwd (the workspace repo) -- found live: the attachments dir lives under
-            # PPM_ROOT, so a Read call against it was denied even with Read granted, same
-            # class of non-interactive-mode gap as Edit/Write needing acceptEdits above,
-            # just for out-of-cwd reads specifically. --add-dir grants exactly those
-            # directories without loosening anything else.
-            image_dirs = sorted({str(Path(p).parent) for p in image_paths})
-            for d in image_dirs:
-                image_dir_flags += ["--add-dir", d]
         combined_prompt = (
             f"{skill_block}{context_block}{stage_prompt}\n\n---\n\n{label}:\n{prompt}"
-            f"{repo_guidance}{skills_guidance}{images_block}"
+            f"{repo_guidance}{skills_guidance}{images_block}{workspace_guidance}"
         )
         command = [
             "claude", "-p", combined_prompt, "--output-format", "json",
@@ -1102,7 +1212,23 @@ async def start_run(
     status = "completed" if process.returncode == 0 else "failed"
     db.complete_run(run_id, status, transcript)
 
-    if stage == "context":
+    if stage == "discuss":
+        if status == "completed":
+            try:
+                wrapper = json.loads(transcript)
+                session_id = wrapper["session_id"]
+                result_text = wrapper["result"]
+                await queue.put(result_text)
+
+                # Plain prose, not JSON — the one stage in this system with no structured
+                # handoff to validate. The reply is the deliverable, shown to the user as-is.
+                db.set_task_awaiting_reply(task_id, session_id)
+            except Exception as exc:
+                db.mark_task_failed(task_id, f"Failed to process agent response: {exc}")
+        else:
+            db.mark_task_failed(task_id, _process_failure_reason(process.returncode, transcript))
+
+    elif stage == "context":
         if status == "completed":
             try:
                 wrapper = json.loads(transcript)
@@ -1326,6 +1452,30 @@ def _project_context_block(project_id: str, repo_scope: Optional[str], mastermin
     conventions_path = target_dir / mastermind / "conventions.md"
     if conventions_path.is_file() and conventions_path.stat().st_size > 0:
         sections.append(conventions_path.read_text())
+    if not sections:
+        return ""
+    return "## Known Project Context\n\n" + "\n\n".join(sections) + "\n\n---\n\n"
+
+
+def _discussion_context_block(project_id: str, repo_scope: Optional[str]) -> str:
+    """Same idea and target_dir resolution as `_project_context_block`, for Discuss mode's
+    fresh (first) call -- but Discuss mode has no single mastermind to scope by, so this
+    pulls in architecture.md plus every domain's conventions.md that actually exists,
+    instead of just one. Empty string when nothing's been generated yet, same as the
+    mastermind-scoped version."""
+    if repo_scope and repo_scope != ".":
+        target_dir = db.PPM_ROOT / project_id / "repos" / repo_scope
+    else:
+        target_dir = db.PPM_ROOT / project_id
+
+    sections = []
+    architecture_path = target_dir / "architecture.md"
+    if architecture_path.is_file() and architecture_path.stat().st_size > 0:
+        sections.append(architecture_path.read_text())
+    for mastermind in sorted(KNOWN_MASTERMINDS):
+        conventions_path = target_dir / mastermind / "conventions.md"
+        if conventions_path.is_file() and conventions_path.stat().st_size > 0:
+            sections.append(conventions_path.read_text())
     if not sections:
         return ""
     return "## Known Project Context\n\n" + "\n\n".join(sections) + "\n\n---\n\n"

@@ -8,7 +8,7 @@ import subprocess
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional, Set
+from typing import List, Literal, Optional, Set
 
 from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -30,14 +30,18 @@ NAME_RE = re.compile(r"^[a-z0-9_-]+$")
 _background_tasks: Set[asyncio.Task] = set()
 
 
+def _schedule_background(coro) -> None:
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
 def _fire_and_forget(run_id: str, coro) -> None:
     # Registers the run's message queue synchronously, before the response handing
     # `run_id` to the client goes out — otherwise the client's WebSocket can connect
     # before this scheduled task has run any of its own code.
     runs.register_run(run_id)
-    task = asyncio.create_task(coro)
-    _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
+    _schedule_background(coro)
 
 
 class ProjectCreate(BaseModel):
@@ -50,10 +54,12 @@ class TaskCreateBody(BaseModel):
     prompt: str
     repo_scope: Optional[str] = None
     image_paths: Optional[List[str]] = None
+    mode: Literal["discuss", "ship"] = "ship"
 
 
 class RespondBody(BaseModel):
     answer: str
+    image_paths: Optional[List[str]] = None
 
 
 class ReviewArtifactBody(BaseModel):
@@ -453,7 +459,8 @@ def delete_project(project_id: str, confirm: bool = False, delete_ppm: bool = Fa
 
 @app.post("/projects/{project_id}/tasks")
 async def create_task(project_id: str, body: TaskCreateBody):
-    if db.get_project(project_id) is None:
+    project = db.get_project(project_id)
+    if project is None:
         raise HTTPException(404, f"project '{project_id}' not found")
 
     image_paths_json = None
@@ -464,11 +471,29 @@ async def create_task(project_id: str, body: TaskCreateBody):
         image_paths_json = json.dumps(body.image_paths)
 
     task_id = uuid.uuid4().hex
-    db.insert_task(task_id, project_id, body.prompt, repo_scope=body.repo_scope, image_paths=image_paths_json)
+    db.insert_task(
+        task_id, project_id, body.prompt,
+        repo_scope=body.repo_scope, image_paths=image_paths_json, mode=body.mode,
+    )
 
-    run_id = runs.new_run_id("context", body.prompt)
-    db.insert_run(run_id, task_id, "context")
-    _fire_and_forget(run_id, runs.start_run(run_id, task_id, project_id, body.prompt, "context"))
+    stage = "discuss" if body.mode == "discuss" else "context"
+    # Only the discuss stage actually uses these on this fresh-call path (context/Supervisor
+    # never touches a workspace, and never reads images) -- harmless to pass through
+    # unconditionally either way. Discuss mode has no separate "confirm" step like ship
+    # mode does, so this first call is the only place an initial attached image can reach
+    # start_run at all -- absolute-path conversion mirrors confirm_context's own below.
+    workspace_path = _effective_workspace_path(project, {"repo_scope": body.repo_scope})
+    image_paths = [str(db.PPM_ROOT / p) for p in body.image_paths] if body.image_paths else None
+    run_id = runs.new_run_id(stage, body.prompt)
+    db.insert_run(run_id, task_id, stage)
+    _fire_and_forget(
+        run_id,
+        runs.start_run(
+            run_id, task_id, project_id, body.prompt, stage,
+            workspace_path=workspace_path, repo_scope=body.repo_scope, image_paths=image_paths,
+        ),
+    )
+    _schedule_background(runs.generate_title(task_id, project_id, body.prompt))
 
     return {"task_id": task_id, "run_id": run_id}
 
@@ -479,6 +504,8 @@ def _serialize_task(task) -> dict:
         "project_id": task["project_id"],
         "prompt": task["prompt"],
         "status": task["status"],
+        "mode": task["mode"],
+        "title": task["title"],
         "feature_slug": task["feature_slug"],
         "masterminds": json.loads(task["masterminds"]) if task["masterminds"] else None,
         "current_mastermind": _current_mastermind(task) if task["masterminds"] else None,
@@ -540,6 +567,23 @@ def list_task_files(task_id: str):
     task = db.get_task(task_id)
     if task is None:
         raise HTTPException(404, f"task '{task_id}' not found")
+
+    if task["mode"] == "discuss":
+        discussion_dir = db.PPM_ROOT / task["project_id"] / "discussions" / task_id
+        if not discussion_dir.is_dir():
+            return []
+        return [
+            {
+                "name": file_path.name,
+                "path": str(file_path.relative_to(db.PPM_ROOT)),
+                "status": "approved",
+                "modified_at": datetime.fromtimestamp(
+                    file_path.stat().st_mtime, tz=timezone.utc
+                ).isoformat(),
+            }
+            for file_path in sorted(discussion_dir.glob("*.md"))
+        ]
+
     if task["feature_slug"] is None:
         return []
 
@@ -581,10 +625,41 @@ def list_task_files(task_id: str):
     return files
 
 
+@app.get("/tasks/{task_id}/runs")
+def list_task_runs(task_id: str):
+    """Discuss mode's message history — each Run row is one turn (the user's prompt, via
+    replay_params, plus the agent's reply, via its transcript). The currently in-flight
+    turn (status == "running") is deliberately excluded: the frontend shows that one live
+    via the run's own WebSocket stream instead, so including it here would double-render it.
+    """
+    task = db.get_task(task_id)
+    if task is None:
+        raise HTTPException(404, f"task '{task_id}' not found")
+
+    turns = []
+    for run in db.list_runs_for_task(task_id):
+        if run["status"] == "running":
+            continue
+        reply = None
+        if run["status"] == "completed" and run["transcript"]:
+            reply = json.loads(run["transcript"])["result"]
+        turns.append(
+            {
+                "run_id": run["id"],
+                "prompt": json.loads(run["replay_params"])["prompt"],
+                "reply": reply,
+                "status": run["status"],
+                "created_at": run["created_at"],
+            }
+        )
+    return turns
+
+
 STAGE_BY_CLARIFICATION_STATUS = {
     "awaiting_clarification": "context",
     "awaiting_requirements_clarification": "requirements",
     "awaiting_tasks_clarification": "tasks",
+    "awaiting_reply": "discuss",
 }
 
 
@@ -599,12 +674,21 @@ async def respond(task_id: str, body: RespondBody):
         raise HTTPException(409, f"task is not awaiting clarification (status: {task['status']})")
 
     extra: dict = {}
-    if stage != "context":
+    if stage == "discuss":
+        project = db.get_project(task["project_id"])
+        extra = {"workspace_path": _effective_workspace_path(project, task)}
+    elif stage != "context":
         project = db.get_project(task["project_id"])
         extra = {
             "mastermind": _current_mastermind(task),
             "workspace_path": _effective_workspace_path(project, task),
         }
+
+    if body.image_paths:
+        for p in body.image_paths:
+            if not _resolve_ppm_path(p).is_file():
+                raise HTTPException(404, f"image '{p}' not found")
+        extra["image_paths"] = [str(db.PPM_ROOT / p) for p in body.image_paths]
 
     run_id = runs.new_run_id(stage, body.answer)
     db.insert_run(run_id, task_id, stage)
@@ -626,6 +710,7 @@ async def respond(task_id: str, body: RespondBody):
 
 IN_FLIGHT_STATUS_BY_STAGE = {
     "context": "running",
+    "discuss": "running",
     "requirements": "investigating",
     "tasks": "planning_tasks",
     "execution": "tasks_ready",

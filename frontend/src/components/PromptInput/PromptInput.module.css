@@ -69,12 +69,8 @@
 
 .attach {
   background: none;
-  color: var(--text-tertiary);
-}
-
-.attach:hover {
+  border: 1px solid var(--neutral-border);
   color: var(--text-primary);
-  background: var(--neutral-bg);
 }
 
 .attach:disabled {

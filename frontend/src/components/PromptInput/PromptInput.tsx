@@ -1,6 +1,6 @@
 import { ArrowUp, Paperclip } from "lucide-react";
 import { useState } from "react";
-import type { DragEvent, KeyboardEvent, TextareaHTMLAttributes } from "react";
+import type { DragEvent, KeyboardEvent, ReactNode, TextareaHTMLAttributes } from "react";
 import { cn } from "@/lib/cn";
 import styles from "./PromptInput.module.css";
 
@@ -15,6 +15,9 @@ interface PromptInputProps
   /** Enables dropping files anywhere on the box, in addition to the attach button — same
    * files a drag-and-drop attach zone would receive. Omit to disable drag-and-drop. */
   onDropFiles?: (files: FileList) => void;
+  /** Rendered in the footer bar next to attach. Only the new-task composer passes this
+   * (a ModeSelect) — other call sites (amendments, clarifications, consults) leave it unset. */
+  modeSelect?: ReactNode;
 }
 
 /** A textarea with a slim footer bar underneath holding its controls (attach, send) — the
@@ -26,6 +29,7 @@ export function PromptInput({
   onSubmit,
   onAttach,
   onDropFiles,
+  modeSelect,
   disabled,
   ...rest
 }: PromptInputProps) {
@@ -86,6 +90,7 @@ export function PromptInput({
             <Paperclip size={13} strokeWidth={1.75} />
           </button>
         ) : null}
+        {modeSelect}
         <div className={styles.spacer} />
         <button
           type="button"

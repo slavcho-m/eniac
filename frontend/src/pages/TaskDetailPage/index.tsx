@@ -12,6 +12,7 @@ import { ClarificationView } from "./ClarificationView";
 import { ConfirmGateView } from "./ConfirmGateView";
 import { ConsultMastermindDialog } from "./ConsultMastermindDialog";
 import styles from "./ConsultMastermindButton.module.css";
+import { DiscussionView } from "./DiscussionView";
 import { ExecutionView } from "./ExecutionView";
 import { FilesPanel } from "./FilesPanel";
 import { InFlightView } from "./InFlightView";
@@ -105,7 +106,7 @@ export function TaskDetailPage() {
             <div style={{ flex: 1, minWidth: 0 }}>
               <SectionLabel>Task</SectionLabel>
               <p style={{ fontSize: "var(--text-label)", color: "var(--text-primary)", marginTop: 6 }}>
-                {task.prompt}
+                {task.title ?? task.feature_slug ?? task.prompt}
               </p>
             </div>
             {task.tasks_approved_at ? (
@@ -134,7 +135,14 @@ export function TaskDetailPage() {
           ) : null}
 
           <div style={{ marginTop: 16, flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
-            {activeRunId ? (
+            {task.mode === "discuss" ? (
+              <DiscussionView
+                task={task}
+                activeRunId={activeRunId}
+                onRunStarted={handleRunStarted}
+                onRunFinished={handleRunFinished}
+              />
+            ) : activeRunId ? (
               <LiveRunView
                 runId={activeRunId}
                 onFinished={handleRunFinished}

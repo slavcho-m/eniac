@@ -2,6 +2,8 @@
 // _serialize_project / _serialize_task, and backend/app/db.py's schema.
 // Keep in sync by hand; the backend has no OpenAPI/codegen step in v1.
 
+import type { TaskMode } from "@/components/ModeSelect/ModeSelect";
+
 export interface Project {
   id: string;
   workspace_path: string | null;
@@ -30,6 +32,7 @@ export type TaskStatus =
   | "planning_tasks"
   | "awaiting_tasks_clarification"
   | "tasks_ready"
+  | "awaiting_reply"
   | "completed"
   | "failed";
 
@@ -40,6 +43,12 @@ export interface Task {
   project_id: string;
   prompt: string;
   status: TaskStatus;
+  /** "discuss" tasks skip the whole Supervisor/Mastermind pipeline below — see
+   * TaskDetailPage's mode branch, which renders DiscussionView instead of renderStage. */
+  mode: TaskMode;
+  /** Short LLM-generated sidebar label, filled in async shortly after task creation — see
+   * useProjectTasks' polling. Null until it resolves (or forever, if generation failed). */
+  title: string | null;
   feature_slug: string | null;
   /** Every mastermind the Supervisor recommended, in the order they run. Only the first
    * entry runs at a time -- see current_mastermind for which one that is right now. */
@@ -67,6 +76,17 @@ export interface Task {
    * owning Project's `repos`) if this task was created scoped to one child repo. */
   repo_scope: string | null;
   image_count: number;
+  created_at: string;
+}
+
+/** One turn of a Discuss-mode conversation — see GET /tasks/:id/runs. `reply` is null for
+ * a turn that failed (status "failed") or hasn't completed yet ("running", though that one
+ * is filtered out server-side — the in-flight turn is shown live via its own run stream). */
+export interface TaskRun {
+  run_id: string;
+  prompt: string;
+  reply: string | null;
+  status: "completed" | "failed";
   created_at: string;
 }
 

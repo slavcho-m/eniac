@@ -37,6 +37,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     pending_amendment TEXT,
     repo_scope TEXT,
     image_paths TEXT,
+    mode TEXT NOT NULL DEFAULT 'ship',
+    title TEXT,
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS runs (
@@ -173,6 +175,8 @@ def init_db() -> None:
             "pending_amendment TEXT",
             "repo_scope TEXT",
             "image_paths TEXT",
+            "mode TEXT NOT NULL DEFAULT 'ship'",
+            "title TEXT",
         ):
             try:
                 conn.execute(f"ALTER TABLE tasks ADD COLUMN {column}")
@@ -287,12 +291,13 @@ def insert_task(
     prompt: str,
     repo_scope: Optional[str] = None,
     image_paths: Optional[str] = None,
+    mode: str = "ship",
 ) -> None:
     with connect() as conn:
         conn.execute(
-            "INSERT INTO tasks (id, project_id, prompt, status, repo_scope, image_paths, created_at) "
-            "VALUES (?, ?, ?, 'running', ?, ?, ?)",
-            (task_id, project_id, prompt, repo_scope, image_paths, now()),
+            "INSERT INTO tasks (id, project_id, prompt, status, repo_scope, image_paths, mode, created_at) "
+            "VALUES (?, ?, ?, 'running', ?, ?, ?, ?)",
+            (task_id, project_id, prompt, repo_scope, image_paths, mode, now()),
         )
 
 
@@ -333,6 +338,19 @@ def set_task_awaiting_clarification(
         conn.execute(
             "UPDATE tasks SET status = ?, session_id = ?, pending_questions = ? WHERE id = ?",
             (status, session_id, questions_json, task_id),
+        )
+
+
+def set_task_title(task_id: str, title: str) -> None:
+    with connect() as conn:
+        conn.execute("UPDATE tasks SET title = ? WHERE id = ?", (title, task_id))
+
+
+def set_task_awaiting_reply(task_id: str, session_id: str) -> None:
+    with connect() as conn:
+        conn.execute(
+            "UPDATE tasks SET status = 'awaiting_reply', session_id = ? WHERE id = ?",
+            (session_id, task_id),
         )
 
 
@@ -752,6 +770,13 @@ def get_latest_run_for_task(task_id: str) -> Optional[sqlite3.Row]:
             "SELECT * FROM runs WHERE task_id = ? ORDER BY created_at DESC LIMIT 1",
             (task_id,),
         ).fetchone()
+
+
+def list_runs_for_task(task_id: str) -> List[sqlite3.Row]:
+    with connect() as conn:
+        return conn.execute(
+            "SELECT * FROM runs WHERE task_id = ? ORDER BY created_at", (task_id,)
+        ).fetchall()
 
 
 def _command_allowlisted(conn: sqlite3.Connection, command: str) -> bool:

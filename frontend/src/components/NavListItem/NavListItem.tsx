@@ -5,7 +5,10 @@ import styles from "./NavListItem.module.css";
 
 interface NavListItemProps {
   icon: ReactNode;
-  label: string;
+  /** Usually a string; a non-string node (e.g. a loading placeholder) is fine too — the
+   * delete button's accessible name falls back to something generic in that case, since it
+   * can't be built from arbitrary JSX. */
+  label: ReactNode;
   meta?: string;
   active?: boolean;
   onClick?: () => void;
@@ -28,7 +31,7 @@ export function NavListItem({ icon, label, meta, active = false, onClick, onDele
             e.stopPropagation();
             onDelete();
           }}
-          aria-label={`Delete ${label}`}
+          aria-label={`Delete ${typeof label === "string" ? label : "item"}`}
         >
           <Trash2 size={13} strokeWidth={1.75} />
         </button>
