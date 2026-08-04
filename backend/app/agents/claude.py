@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -104,6 +105,19 @@ class ClaudeBackend(AgentBackend):
         "Diagram": "haiku",
         "patch": "sonnet",
     }
+
+    def is_authenticated(self) -> bool:
+        # Same check scripts/setup.sh already runs as a preflight, reused here for the
+        # live/runtime version -- exit 0 with a JSON `"loggedIn": true` body means an
+        # active session; anything else (not installed, not logged in, malformed output)
+        # is treated as unavailable rather than raised.
+        try:
+            result = subprocess.run(
+                ["claude", "auth", "status"], capture_output=True, text=True, timeout=10
+            )
+            return result.returncode == 0 and json.loads(result.stdout).get("loggedIn") is True
+        except (subprocess.SubprocessError, OSError, json.JSONDecodeError):
+            return False
 
     def _tool_flags_and_env(
         self, capability: StageCapability, run_id: str, task_id: str, cwd: Path, has_images: bool

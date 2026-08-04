@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from . import db, runs
+from .agents import BACKENDS
 
 app = FastAPI()
 app.add_middleware(
@@ -307,6 +308,16 @@ def _serialize_project(project) -> dict:
             project["id"], project["context_refreshed_at"]
         ),
     }
+
+
+@app.get("/agents/availability")
+def get_agent_availability():
+    """Which agent backends are actually usable on this machine right now -- each
+    `is_authenticated()` check is a real, local, synchronous subprocess call (no caching),
+    since login state can change between page loads (a `claude auth login`/`codex login`
+    run in another terminal) and this is cheap enough (<200ms combined) to just re-check.
+    Drives AgentSelect's per-option disabled state in the composer."""
+    return {name: backend.is_authenticated() for name, backend in BACKENDS.items()}
 
 
 @app.get("/projects")

@@ -50,6 +50,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+// --- Agents ---
+
+export function getAgentAvailability(): Promise<Record<AgentBackend, boolean>> {
+  return request("/agents/availability");
+}
+
 // --- Projects ---
 
 export function createProject(

@@ -23,9 +23,35 @@ NODE_MAJOR="$(node -e 'console.log(process.versions.node.split(".")[0])')"
 
 command -v npm >/dev/null 2>&1 || fail "npm not found (should ship with Node). Reinstall Node and retry."
 
-command -v claude >/dev/null 2>&1 || fail "claude CLI not found. Install it (see https://docs.claude.com/claude-code) and retry."
-claude auth status 2>/dev/null | grep -q '"loggedIn": true' \
-  || fail "claude CLI is not authenticated. Run 'claude auth login' and retry."
+# Eniac needs at least one agent backend, not specifically Claude -- Codex is an equally
+# valid choice (see backend/app/agents/). Each missing/unauthenticated one just means that
+# option shows disabled in the UI (see GET /agents/availability), not a broken install, so
+# only fail here if *neither* is usable.
+CLAUDE_OK=0
+if command -v claude >/dev/null 2>&1 && claude auth status 2>/dev/null | grep -q '"loggedIn": true'; then
+  CLAUDE_OK=1
+fi
+
+# Codex's standalone installer puts the binary at ~/.local/bin/codex and only adds that to
+# PATH via a .zprofile snippet, which non-login shells (this script, run via `make setup`)
+# don't source -- checked explicitly rather than assuming `command -v codex` finds it,
+# same fallback backend/app/agents/codex.py's own binary resolution uses.
+CODEX_BIN=""
+if command -v codex >/dev/null 2>&1; then
+  CODEX_BIN="codex"
+elif [ -x "$HOME/.local/bin/codex" ]; then
+  CODEX_BIN="$HOME/.local/bin/codex"
+fi
+CODEX_OK=0
+if [ -n "$CODEX_BIN" ] && "$CODEX_BIN" login status >/dev/null 2>&1; then
+  CODEX_OK=1
+fi
+
+if [ "$CLAUDE_OK" -eq 0 ] && [ "$CODEX_OK" -eq 0 ]; then
+  fail "Neither claude nor codex CLI is installed and authenticated. Install and log into at least one: claude (https://docs.claude.com/claude-code, then 'claude auth login') or codex (https://developers.openai.com/codex, then 'codex login')."
+fi
+[ "$CLAUDE_OK" -eq 1 ] || echo "eniac: claude CLI not found/authenticated -- only Codex will be available until you run 'claude auth login'."
+[ "$CODEX_OK" -eq 1 ] || echo "eniac: codex CLI not found/authenticated -- only Claude will be available until you run 'codex login'."
 
 echo "Preflight OK."
 

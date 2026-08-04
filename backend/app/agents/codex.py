@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -103,6 +104,24 @@ class CodexBackend(AgentBackend):
             "patch",
         )
     }
+
+    def is_authenticated(self) -> bool:
+        # `codex login status` exits 0 with "Logged in using ..." when authenticated, 1
+        # with "Not logged in" otherwise (confirmed live against both a real login and a
+        # scratch CODEX_HOME with no auth.json) -- explicitly pointed at the *real*
+        # CODEX_HOME (not one of the per-conversation scratch dirs `run()` creates), since
+        # this checks whether the user has ever actually logged in on this machine.
+        try:
+            result = subprocess.run(
+                [_CODEX_BIN, "login", "status"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                env={**os.environ, "CODEX_HOME": str(_REAL_CODEX_HOME)},
+            )
+            return result.returncode == 0
+        except (subprocess.SubprocessError, OSError):
+            return False
 
     def _hooks_and_env(
         self, capability: StageCapability, run_id: str, task_id: str

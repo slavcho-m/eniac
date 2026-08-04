@@ -100,6 +100,15 @@ class AgentBackend(ABC):
         return self.ROLE_MODELS[role_key_for_stage(stage, assistant)]
 
     @abstractmethod
+    def is_authenticated(self) -> bool:
+        """Whether this CLI is installed and logged in on this machine right now -- a
+        quick, local, synchronous check (each backend's own auth-status subcommand, not a
+        network call), used to decide which agents the UI offers at all. Must never raise:
+        a missing binary or a malformed status response means "not available", not a
+        crashed endpoint."""
+        raise NotImplementedError
+
+    @abstractmethod
     async def run(
         self,
         *,

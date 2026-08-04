@@ -1,8 +1,9 @@
 import { X } from "lucide-react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { AgentSelect, AppShell, Badge, Button, ModeSelect, PromptInput, SectionLabel } from "@/components";
 import type { AgentBackend, TaskMode } from "@/components";
+import { useAgentAvailability } from "@/hooks/useAgentAvailability";
 import { useImageAttachments } from "@/hooks/useImageAttachments";
 import { useProject } from "@/hooks/useProject";
 import { Sidebar } from "@/layout/Sidebar";
@@ -14,6 +15,17 @@ import { RepoGraph } from "./RepoGraph";
 interface PendingTask {
   taskId: string;
   runId: string;
+}
+
+// Submitting a task navigates away to the new task's detail page (see handleRunFinished
+// below) -- ProjectPage unmounts, so plain useState alone forgets the user's last pick the
+// moment they start their next task. Persisted across that remount (and across reloads)
+// rather than lifted into some longer-lived context: this is the only place agent gets
+// chosen, so there's nothing else that would need to share the value.
+const AGENT_STORAGE_KEY = "eniac.lastAgent";
+
+function readStoredAgent(): AgentBackend {
+  return localStorage.getItem(AGENT_STORAGE_KEY) === "codex" ? "codex" : "claude";
 }
 
 /**
@@ -32,9 +44,10 @@ export function ProjectPage() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { data: project, refetch: refetchProject } = useProject(projectId);
+  const { data: agentAvailability } = useAgentAvailability();
   const [prompt, setPrompt] = useState("");
   const [mode, setMode] = useState<TaskMode>("ship");
-  const [agent, setAgent] = useState<AgentBackend>("claude");
+  const [agent, setAgentState] = useState<AgentBackend>(readStoredAgent);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState<PendingTask | null>(null);
@@ -43,6 +56,39 @@ export function ProjectPage() {
   const { images, handleFilesSelected, removeImage, imagePaths, imagesStillUploading } =
     useImageAttachments(projectId);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // The user's stored preference is only worth writing back on an actual pick -- a
+  // temporary availability-driven fallback (below) isn't a real choice, and shouldn't
+  // clobber e.g. a genuine "codex" preference just because codex happened to be
+  // unavailable on this one visit.
+  function selectAgent(next: AgentBackend) {
+    setAgentState(next);
+    localStorage.setItem(AGENT_STORAGE_KEY, next);
+  }
+
+  // The stored/default agent is only a reasonable pick once we actually know what's
+  // authenticated on this machine — corrects away from it the moment availability loads,
+  // so a user with only one CLI logged in never lands on a submit button wired to the one
+  // that's guaranteed to fail. Uses setAgentState (not selectAgent): this is a temporary
+  // fallback for the current visit, not a new preference to persist. Deliberately excludes
+  // `agent` itself from deps: a one-time correction against fresh availability data, not a
+  // loop that should re-fire every time the selection changes — AgentSelect already
+  // prevents picking a disabled option by hand.
+  useEffect(() => {
+    if (!agentAvailability || agentAvailability[agent]) return;
+    const fallback = (["claude", "codex"] as const).find((candidate) => agentAvailability[candidate]);
+    if (fallback) setAgentState(fallback);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agentAvailability]);
+
+  const noAgentAvailable =
+    agentAvailability != null && !agentAvailability.claude && !agentAvailability.codex;
+  const unavailableAgents: Partial<Record<AgentBackend, string>> = agentAvailability
+    ? {
+        ...(!agentAvailability.claude && { claude: "Not authenticated — run `claude auth login`" }),
+        ...(!agentAvailability.codex && { codex: "Not authenticated — run `codex login`" }),
+      }
+    : {};
 
   const selectedNode = searchParams.get("node");
 
@@ -160,6 +206,13 @@ export function ProjectPage() {
             {error ? (
               <p style={{ color: "var(--error)", margin: 0, fontSize: "var(--text-body)" }}>{error}</p>
             ) : null}
+            {noAgentAvailable ? (
+              <p style={{ color: "var(--error)", margin: 0, fontSize: "var(--text-body)" }}>
+                Neither Claude nor Codex is authenticated on this machine — run{" "}
+                <code>claude auth login</code> or <code>codex login</code> and reload before
+                starting a task.
+              </p>
+            ) : null}
             {images.length > 0 ? (
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                 {images.map((img) => (
@@ -220,11 +273,20 @@ export function ProjectPage() {
               onDropFiles={handleFilesSelected}
               modeSelect={
                 <>
-                  <ModeSelect value={mode} onChange={setMode} disabled={submitting || imagesStillUploading} />
-                  <AgentSelect value={agent} onChange={setAgent} disabled={submitting || imagesStillUploading} />
+                  <ModeSelect
+                    value={mode}
+                    onChange={setMode}
+                    disabled={submitting || imagesStillUploading || noAgentAvailable}
+                  />
+                  <AgentSelect
+                    value={agent}
+                    onChange={selectAgent}
+                    disabled={submitting || imagesStillUploading}
+                    unavailable={unavailableAgents}
+                  />
                 </>
               }
-              disabled={submitting || imagesStillUploading}
+              disabled={submitting || imagesStillUploading || noAgentAvailable}
             />
           </div>
         </div>

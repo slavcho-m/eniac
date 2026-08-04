@@ -12,7 +12,6 @@ interface AgentOption {
   label: string;
   description: string;
   icon: ComponentType<{ size?: number; strokeWidth?: number; className?: string }>;
-  disabled?: boolean;
 }
 
 // Record, not an array -- same reasoning as ModeSelect's MODES. Key order is render order
@@ -29,6 +28,11 @@ interface AgentSelectProps {
   /** Native tooltip on the trigger button -- e.g. explaining why it's disabled once a task
    * already exists. Browsers show `title` on hover even for a disabled button. */
   title?: string;
+  /** Per-agent reason it can't be picked right now (not authenticated on this machine) --
+   * keyed by whichever agent(s) are unavailable, absent entirely when both are available.
+   * Disables that one option in the menu and shows the reason as its own tooltip, without
+   * touching the trigger button itself (a still-available `value` stays fully usable). */
+  unavailable?: Partial<Record<AgentBackend, string>>;
 }
 
 /** Agent picker for the new-task composer footer, styled identically to ModeSelect (shares
@@ -36,7 +40,7 @@ interface AgentSelectProps {
  * shared base yet: two call sites is rule-of-three territory, not three. Locked in once a
  * task exists, same as ModeSelect -- a resumed session's session/thread id is only ever
  * valid against the backend that produced it. Fully controlled. */
-export function AgentSelect({ value, onChange, disabled, title }: AgentSelectProps) {
+export function AgentSelect({ value, onChange, disabled, title, unavailable }: AgentSelectProps) {
   const [open, setOpen] = useState(false);
   const [position, setPosition] = useState({ bottom: 0, left: 0 });
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -94,26 +98,30 @@ export function AgentSelect({ value, onChange, disabled, title }: AgentSelectPro
               role="menu"
               style={{ bottom: position.bottom, left: position.left }}
             >
-              {Object.values(AGENTS).map((agent) => (
-                <button
-                  key={agent.value}
-                  type="button"
-                  className={cn(styles.option, agent.value === value && styles.optionActive)}
-                  role="menuitem"
-                  aria-label={agent.label}
-                  disabled={agent.disabled}
-                  onClick={() => {
-                    onChange(agent.value);
-                    setOpen(false);
-                  }}
-                >
-                  <agent.icon size={13} strokeWidth={1.75} className={styles.optionIcon} />
-                  <span className={styles.optionText}>
-                    <span className={styles.optionLabel}>{agent.label}</span>
-                    <span className={styles.optionDescription}>{agent.description}</span>
-                  </span>
-                </button>
-              ))}
+              {Object.values(AGENTS).map((agent) => {
+                const reason = unavailable?.[agent.value];
+                return (
+                  <button
+                    key={agent.value}
+                    type="button"
+                    className={cn(styles.option, agent.value === value && styles.optionActive)}
+                    role="menuitem"
+                    aria-label={agent.label}
+                    disabled={Boolean(reason)}
+                    title={reason}
+                    onClick={() => {
+                      onChange(agent.value);
+                      setOpen(false);
+                    }}
+                  >
+                    <agent.icon size={13} strokeWidth={1.75} className={styles.optionIcon} />
+                    <span className={styles.optionText}>
+                      <span className={styles.optionLabel}>{agent.label}</span>
+                      <span className={styles.optionDescription}>{reason ?? agent.description}</span>
+                    </span>
+                  </button>
+                );
+              })}
             </div>,
             document.body,
           )
