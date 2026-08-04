@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { MessageSquarePlus } from "lucide-react";
 import { useParams } from "react-router-dom";
-import { AppShell, SectionLabel } from "@/components";
+import { AgentSelect, AppShell, ModeSelect, SectionLabel } from "@/components";
 import { useTask } from "@/hooks/useTask";
 import { useTaskFiles } from "@/hooks/useTaskFiles";
 import { useTaskItems } from "@/hooks/useTaskItems";
@@ -18,6 +18,7 @@ import { FilesPanel } from "./FilesPanel";
 import { InFlightView } from "./InFlightView";
 import { LiveRunView } from "./LiveRunView";
 import { MastermindProgress } from "./MastermindProgress";
+import { PatchReviewView } from "./PatchReviewView";
 import { TerminalStateView } from "./TerminalStateView";
 
 function mastermindLabel(task: Task): string {
@@ -33,7 +34,12 @@ function renderStage(
 ) {
   switch (task.status) {
     case "running":
-      return <InFlightView label="Supervisor is thinking…" onRefetch={onRefetch} />;
+      return (
+        <InFlightView
+          label={task.mode === "patch" ? "Patch agent is investigating…" : "Supervisor is thinking…"}
+          onRefetch={onRefetch}
+        />
+      );
     case "awaiting_clarification":
     case "awaiting_requirements_clarification":
     case "awaiting_tasks_clarification":
@@ -58,6 +64,8 @@ function renderStage(
       ) : (
         <ConfirmGateView task={task} stage="tasks" onRefetch={onRefetch} onRunStarted={onRunStarted} />
       );
+    case "patch_ready":
+      return <PatchReviewView task={task} onRefetch={onRefetch} onRunStarted={onRunStarted} />;
     case "completed":
     case "failed":
       return <TerminalStateView task={task} onRunStarted={onRunStarted} />;
@@ -109,17 +117,31 @@ export function TaskDetailPage() {
                 {task.title ?? task.feature_slug ?? task.prompt}
               </p>
             </div>
-            {task.tasks_approved_at ? (
-              <button
-                type="button"
-                className={styles.button}
-                onClick={() => setConsultOpen(true)}
-                aria-label="Consult Mastermind"
-                title="Consult Mastermind"
-              >
-                <MessageSquarePlus size={16} strokeWidth={1.75} />
-              </button>
-            ) : null}
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+              <ModeSelect
+                value={task.mode}
+                onChange={() => {}}
+                disabled
+                title="Mode is locked in once a task starts and can't be changed"
+              />
+              <AgentSelect
+                value={task.agent}
+                onChange={() => {}}
+                disabled
+                title="Agent is locked in once a task starts and can't be changed"
+              />
+              {task.tasks_approved_at ? (
+                <button
+                  type="button"
+                  className={styles.button}
+                  onClick={() => setConsultOpen(true)}
+                  aria-label="Consult Mastermind"
+                  title="Consult Mastermind"
+                >
+                  <MessageSquarePlus size={16} strokeWidth={1.75} />
+                </button>
+              ) : null}
+            </div>
           </div>
 
           {task.masterminds && task.masterminds.length > 1 ? (

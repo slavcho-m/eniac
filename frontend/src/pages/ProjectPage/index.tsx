@@ -1,8 +1,8 @@
 import { X } from "lucide-react";
 import { useRef, useState } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { AppShell, Badge, Button, ModeSelect, PromptInput, SectionLabel } from "@/components";
-import type { TaskMode } from "@/components";
+import { AgentSelect, AppShell, Badge, Button, ModeSelect, PromptInput, SectionLabel } from "@/components";
+import type { AgentBackend, TaskMode } from "@/components";
 import { useImageAttachments } from "@/hooks/useImageAttachments";
 import { useProject } from "@/hooks/useProject";
 import { Sidebar } from "@/layout/Sidebar";
@@ -34,6 +34,7 @@ export function ProjectPage() {
   const { data: project, refetch: refetchProject } = useProject(projectId);
   const [prompt, setPrompt] = useState("");
   const [mode, setMode] = useState<TaskMode>("ship");
+  const [agent, setAgent] = useState<AgentBackend>("claude");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState<PendingTask | null>(null);
@@ -56,7 +57,7 @@ export function ProjectPage() {
     setSubmitting(true);
     setError(null);
     try {
-      const result = await createTask(projectId, trimmed, selectedNode ?? undefined, imagePaths, mode);
+      const result = await createTask(projectId, trimmed, selectedNode ?? undefined, imagePaths, mode, agent);
       setPending({ taskId: result.task_id, runId: result.run_id });
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Failed to create task.");
@@ -218,7 +219,10 @@ export function ProjectPage() {
               onAttach={() => fileInputRef.current?.click()}
               onDropFiles={handleFilesSelected}
               modeSelect={
-                <ModeSelect value={mode} onChange={setMode} disabled={submitting || imagesStillUploading} />
+                <>
+                  <ModeSelect value={mode} onChange={setMode} disabled={submitting || imagesStillUploading} />
+                  <AgentSelect value={agent} onChange={setAgent} disabled={submitting || imagesStillUploading} />
+                </>
               }
               disabled={submitting || imagesStillUploading}
             />

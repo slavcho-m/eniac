@@ -1,46 +1,47 @@
-import { MessagesSquare, Rocket, Wrench } from "lucide-react";
+import { Sparkles, Terminal } from "lucide-react";
 import type { ComponentType } from "react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { cn } from "@/lib/cn";
-import styles from "./ModeSelect.module.css";
+import styles from "../ModeSelect/ModeSelect.module.css";
 
-export type TaskMode = "discuss" | "patch" | "ship";
+export type AgentBackend = "claude" | "codex";
 
-interface ModeOption {
-  value: TaskMode;
+interface AgentOption {
+  value: AgentBackend;
   label: string;
   description: string;
   icon: ComponentType<{ size?: number; strokeWidth?: number; className?: string }>;
   disabled?: boolean;
 }
 
-// Record, not an array -- indexing by the TaskMode key is guaranteed-present under
-// noUncheckedIndexedAccess (unlike array indexing), same pattern as
-// ExecutionView's BADGE_BY_ITEM_STATUS. Key order is render order (Discuss, Patch, Ship).
-const MODES: Record<TaskMode, ModeOption> = {
-  discuss: { value: "discuss", label: "Discuss", description: "Talk it through — no files touched.", icon: MessagesSquare },
-  patch: { value: "patch", label: "Patch", description: "Find it, fix it, test it — for small bugfixes.", icon: Wrench },
-  ship: { value: "ship", label: "Ship", description: "Full pipeline — investigate, plan, build, review.", icon: Rocket },
+// Record, not an array -- same reasoning as ModeSelect's MODES. Key order is render order
+// (Claude, Codex).
+const AGENTS: Record<AgentBackend, AgentOption> = {
+  claude: { value: "claude", label: "Claude", description: "Anthropic's Claude Code CLI.", icon: Sparkles },
+  codex: { value: "codex", label: "Codex", description: "OpenAI's Codex CLI.", icon: Terminal },
 };
 
-interface ModeSelectProps {
-  value: TaskMode;
-  onChange: (mode: TaskMode) => void;
+interface AgentSelectProps {
+  value: AgentBackend;
+  onChange: (agent: AgentBackend) => void;
   disabled?: boolean;
   /** Native tooltip on the trigger button -- e.g. explaining why it's disabled once a task
    * already exists. Browsers show `title` on hover even for a disabled button. */
   title?: string;
 }
 
-/** Mode picker for the new-task composer footer. Locked in once a task exists — this
- * component only owns its own open/closed state, the chosen value is fully controlled. */
-export function ModeSelect({ value, onChange, disabled, title }: ModeSelectProps) {
+/** Agent picker for the new-task composer footer, styled identically to ModeSelect (shares
+ * its .module.css) -- same portal/positioning mechanics, deliberately not extracted into a
+ * shared base yet: two call sites is rule-of-three territory, not three. Locked in once a
+ * task exists, same as ModeSelect -- a resumed session's session/thread id is only ever
+ * valid against the backend that produced it. Fully controlled. */
+export function AgentSelect({ value, onChange, disabled, title }: AgentSelectProps) {
   const [open, setOpen] = useState(false);
   const [position, setPosition] = useState({ bottom: 0, left: 0 });
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
-  const current = MODES[value];
+  const current = AGENTS[value];
 
   useEffect(() => {
     if (!open) return undefined;
@@ -93,23 +94,23 @@ export function ModeSelect({ value, onChange, disabled, title }: ModeSelectProps
               role="menu"
               style={{ bottom: position.bottom, left: position.left }}
             >
-              {Object.values(MODES).map((mode) => (
+              {Object.values(AGENTS).map((agent) => (
                 <button
-                  key={mode.value}
+                  key={agent.value}
                   type="button"
-                  className={cn(styles.option, mode.value === value && styles.optionActive)}
+                  className={cn(styles.option, agent.value === value && styles.optionActive)}
                   role="menuitem"
-                  aria-label={mode.label}
-                  disabled={mode.disabled}
+                  aria-label={agent.label}
+                  disabled={agent.disabled}
                   onClick={() => {
-                    onChange(mode.value);
+                    onChange(agent.value);
                     setOpen(false);
                   }}
                 >
-                  <mode.icon size={13} strokeWidth={1.75} className={styles.optionIcon} />
+                  <agent.icon size={13} strokeWidth={1.75} className={styles.optionIcon} />
                   <span className={styles.optionText}>
-                    <span className={styles.optionLabel}>{mode.label}</span>
-                    <span className={styles.optionDescription}>{mode.description}</span>
+                    <span className={styles.optionLabel}>{agent.label}</span>
+                    <span className={styles.optionDescription}>{agent.description}</span>
                   </span>
                 </button>
               ))}

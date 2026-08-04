@@ -3,6 +3,9 @@
 // Keep in sync by hand; the backend has no OpenAPI/codegen step in v1.
 
 import type { TaskMode } from "@/components/ModeSelect/ModeSelect";
+import type { AgentBackend } from "@/components/AgentSelect/AgentSelect";
+
+export type { TaskMode, AgentBackend };
 
 export interface Project {
   id: string;
@@ -33,6 +36,7 @@ export type TaskStatus =
   | "awaiting_tasks_clarification"
   | "tasks_ready"
   | "awaiting_reply"
+  | "patch_ready"
   | "completed"
   | "failed";
 
@@ -46,6 +50,9 @@ export interface Task {
   /** "discuss" tasks skip the whole Supervisor/Mastermind pipeline below — see
    * TaskDetailPage's mode branch, which renders DiscussionView instead of renderStage. */
   mode: TaskMode;
+  /** Which CLI ran this task — locked in at creation, same as `mode` (a resumed
+   * session/thread id is only ever valid against the backend that produced it). */
+  agent: AgentBackend;
   /** Short LLM-generated sidebar label, filled in async shortly after task creation — see
    * useProjectTasks' polling. Null until it resolves (or forever, if generation failed). */
   title: string | null;

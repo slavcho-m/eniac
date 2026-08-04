@@ -1,4 +1,5 @@
 import type {
+  AgentBackend,
   AssistantInfo,
   BashAllowlistEntry,
   BashApproval,
@@ -104,10 +105,11 @@ export function createTask(
   repoScope?: string,
   imagePaths?: string[],
   mode?: TaskMode,
+  agent?: AgentBackend,
 ): Promise<{ task_id: string; run_id: string }> {
   return request(`/projects/${projectId}/tasks`, {
     method: "POST",
-    body: JSON.stringify({ prompt, repo_scope: repoScope, image_paths: imagePaths, mode }),
+    body: JSON.stringify({ prompt, repo_scope: repoScope, image_paths: imagePaths, mode, agent }),
   });
 }
 
@@ -195,6 +197,21 @@ export function rejectTasks(taskId: string, feedback: string): Promise<{ task_id
     method: "POST",
     body: JSON.stringify({ feedback }),
   });
+}
+
+export function approvePatch(taskId: string): Promise<{ task_id: string; status: string }> {
+  return request(`/tasks/${taskId}/approve-patch`, { method: "POST" });
+}
+
+export function rejectPatch(taskId: string, feedback: string): Promise<{ task_id: string; run_id: string }> {
+  return request(`/tasks/${taskId}/reject-patch`, {
+    method: "POST",
+    body: JSON.stringify({ feedback }),
+  });
+}
+
+export function getPatchReview(taskId: string): Promise<{ diff: string; summary: string | null }> {
+  return request(`/tasks/${taskId}/patch-review`);
 }
 
 export function approveAssistant(

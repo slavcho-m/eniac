@@ -11,10 +11,13 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from . import db
+from .agents import BACKENDS, ASSISTANT_TIERS, StageCapability
+from .agents.claude import ClaudeBackend
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SUPERVISOR_PROMPT_PATH = REPO_ROOT / "agents" / "supervisor" / "prompt.md"
 DISCUSSION_PROMPT_PATH = REPO_ROOT / "agents" / "discussion" / "prompt.md"
+PATCH_PROMPT_PATH = REPO_ROOT / "agents" / "patch" / "prompt.md"
 CONTEXT_INVESTIGATOR_PROMPT_PATH = REPO_ROOT / "agents" / "context-investigator" / "prompt.md"
 MASTERMINDS_DIR = REPO_ROOT / "agents" / "masterminds"
 ASSISTANTS_DIR = REPO_ROOT / "agents" / "assistants"
@@ -28,85 +31,11 @@ MASTERMIND_ASSISTANTS = {
     "architect": {"Discovery", "Decision", "Diagram"},
 }
 
-# Tool access differs by Assistant type, unlike Masterminds (uniformly read-only investigate):
-# Design/Implementation write code, Review only reads it. Analysis (DevOps) and Discovery
-# (Architect) are investigation only, same read-only stance as Review. Decision and Diagram
-# (Architect) write real files but never need Bash — they only ever produce ADR/diagram
-# markdown, never code, config, or infra-as-code, so there's nothing to shell out to verify.
-# Test, CI-CD Implementer, and Environment get real Bash — every call is gated per-command by
-# a PreToolUse hook (agents/hooks/bash_gate.py, wired in below) that asks the Eniac backend for
-# a decision: an instant answer if the exact
-# command is already on the `bash_allowlist`, otherwise a real wait for a human to approve/
-# deny/allowlist it via the UI. This replaced an earlier all-or-nothing `bypassPermissions`
-# grant (tried for Test on 2026-07-24, reverted the same day — no per-command gate, an
-# unbounded risk unscoped by git-diff review, unlike Edit/Write which are path-scoped and
-# fully revertible) once the hook mechanism was built and verified live. See
-# [[eniac-no-unattended-bash]] for that history — this supersedes it, not contradicts it.
-ASSISTANT_TOOLS = {
-    "Design": "Read,Grep,Glob",
-    "Implementation": "Edit,Write,Read",
-    "Review": "Read",
-    "Test": "Edit,Write,Read,Bash",
-    "Analysis": "Read,Grep,Glob",
-    "CI-CD Implementer": "Edit,Write,Read,Grep,Glob,Bash",
-    "Environment": "Edit,Write,Read,Grep,Glob,Bash",
-    "Discovery": "Read,Grep,Glob",
-    "Decision": "Edit,Write,Read,Grep,Glob",
-    "Diagram": "Edit,Write,Read,Grep,Glob",
-}
-
-# ponytail: hardcoded for now rather than a real settings UI -- see
-# docs/things-to-address.md for the "extend this into a real setting" note. Every value
-# here is either "sonnet" (unchanged from the default this was tuned against) or a
-# deliberate downgrade -- never a bump to a pricier model, since the point is spending
-# less, not more. Downgraded to "haiku": Test/Analysis/Discovery/Diagram, all cases where a
-# weak output is caught downstream rather than silently harmful (a bad test shows up in
-# your own diff review; a bad investigation report is just read and judged, not executed).
-# Kept at "sonnet": anything that ships as real code (Implementation), the safety net whose
-# whole job is catching problems (Review), anything every later stage reads (Supervisor's
-# scoping, Mastermind's requirements, Context Investigator's architecture docs, Design's
-# now-authoritative design doc), anything with real infra/deploy blast radius (CI-CD
-# Implementer, Environment), and genuinely hard, infrequent judgment calls (Decision).
-# "mastermind" is deliberately ONE key covering requirements/tasks/consultation, not three
-# separate ones -- tasks/consultation resume the requirements session, and switching models
-# on a resumed call forfeits part of the prompt cache (confirmed live: resuming with the
-# same model reused ~27.5k cached tokens for 173 new ones; resuming that same session with
-# a different model reused only ~15.6k and had to re-pay for ~5k fresh) -- tiering those
-# three differently would cost more, not less.
-ROLE_MODELS: Dict[str, str] = {
-    "supervisor": "sonnet",
-    "context_investigator": "sonnet",
-    "mastermind": "sonnet",
-    "Design": "sonnet",
-    "Implementation": "sonnet",
-    "Review": "sonnet",
-    "Test": "haiku",
-    "Analysis": "haiku",
-    "CI-CD Implementer": "sonnet",
-    "Environment": "sonnet",
-    "Discovery": "haiku",
-    "Decision": "sonnet",
-    "Diagram": "haiku",
-}
-
-
-def _model_for_stage(stage: str, assistant: Optional[str] = None) -> str:
-    """Resolves which ROLE_MODELS entry a given start_run call should use. "context" ->
-    the Supervisor; "requirements"/"tasks"/"consultation" all share the single
-    "mastermind" entry (see ROLE_MODELS' docstring-comment for why); "execution" is keyed
-    by the assistant's own name, same granularity as ASSISTANT_TOOLS."""
-    if stage in ("context", "discuss"):
-        return ROLE_MODELS["supervisor"]
-    if stage in ("requirements", "tasks", "consultation"):
-        return ROLE_MODELS["mastermind"]
-    assert stage == "execution" and assistant is not None
-    return ROLE_MODELS[assistant]
-
 # Skills only ever apply to the execution stage — read straight off disk into the prompt
 # string by `_skills_block` below, not through the CLI's own skill-loading, specifically
 # because --safe-mode disables skills entirely regardless of source (confirmed live: a
 # --plugin-dir-loaded skill was completely invisible under --safe-mode) — and most
-# execution-stage Assistants run under --safe-mode too now (see ASSISTANT_TOOLS/
+# execution-stage Assistants run under --safe-mode too now (see agents.ASSISTANT_TIERS/
 # start_run), so relying on the CLI's own mechanism would've broken skills for exactly the
 # roles they exist for. Keyed by
 # (mastermind, assistant), not assistant name alone, since assistant names are shared
@@ -222,51 +151,6 @@ def _skills_block(skill_names: List[str]) -> str:
         return ""
     return "## Relevant Skills\n\n" + "\n\n".join(sections) + "\n\n---\n\n"
 
-# The backend's own base URL, so the PreToolUse hook (a subprocess of `claude`, not of this
-# process) knows where to POST/poll approval requests. No prior "my own base URL" concept
-# existed in this codebase (port 1946 was only ever hardcoded in scripts/start.sh) — this
-# introduces it minimally, overridable via env, defaulting to the documented dev port.
-ENIAC_BACKEND_URL = os.environ.get("ENIAC_BACKEND_URL", "http://localhost:1946")
-BASH_GATE_HOOK_PATH = REPO_ROOT / "agents" / "hooks" / "bash_gate.py"
-WRITE_GATE_HOOK_PATH = REPO_ROOT / "agents" / "hooks" / "write_gate.py"
-
-
-def _bash_hook_settings() -> str:
-    """A `--settings` JSON string (confirmed via live spike: the CLI accepts an inline JSON
-    string, not just a file path) registering the Bash-gating PreToolUse hook, without
-    writing anything into the target workspace's own .claude/ directory."""
-    return json.dumps(
-        {
-            "hooks": {
-                "PreToolUse": [
-                    {
-                        "matcher": "Bash",
-                        "hooks": [{"type": "command", "command": f"python3 {BASH_GATE_HOOK_PATH}"}],
-                    }
-                ]
-            }
-        }
-    )
-
-
-def _write_gate_settings() -> str:
-    """Same mechanism as `_bash_hook_settings`, for Discuss mode's Write tool instead --
-    confirmed via a live spike that a declarative `--settings` permissions.deny path rule
-    is silently ignored under --permission-mode acceptEdits (the write went through anyway),
-    while a real PreToolUse hook reliably blocks it. See write_gate.py for the actual check
-    (path-containment against ENIAC_DISCUSSION_SANDBOX, set via this call's extra_env)."""
-    return json.dumps(
-        {
-            "hooks": {
-                "PreToolUse": [
-                    {
-                        "matcher": "Write",
-                        "hooks": [{"type": "command", "command": f"python3 {WRITE_GATE_HOOK_PATH}"}],
-                    }
-                ]
-            }
-        }
-    )
 
 
 # On a fresh call, the stage's prompt.md carries the JSON-output contract. A resumed call
@@ -338,9 +222,9 @@ def new_run_id(stage: str, prompt: str) -> str:
     return f"{stage}-{slugify(prompt)}-{uuid.uuid4().hex[:8]}"
 
 
-def _process_failure_reason(returncode: Optional[int], transcript: str) -> str:
+def _process_failure_reason(agent: str, returncode: Optional[int], transcript: str) -> str:
     tail = transcript.strip()[-2000:] or "(no output)"
-    return f"claude exited with code {returncode}:\n{tail}"
+    return f"{agent} exited with code {returncode}:\n{tail}"
 
 
 def _snapshot_tree(cwd: Path) -> str:
@@ -606,7 +490,7 @@ def _parse_mastermind_json(result_text: str) -> Dict[str, Any]:
         if not data["requirements"]:
             raise ValueError("requirements must be non-empty")
         # file_plan is what lets Implementation/Review/Test skip their own Grep/Glob
-        # discovery (see ASSISTANT_TOOLS) -- it has to actually be there and each entry
+        # discovery (see agents.ASSISTANT_TIERS) -- it has to actually be there and each entry
         # has to be usable, not just present.
         if not data["file_plan"]:
             raise ValueError("file_plan must be non-empty")
@@ -990,88 +874,61 @@ async def start_run(
         ),
     )
 
-    # Supervisor must not investigate code (agents/supervisor/prompt.md) — enforced via
-    # --tools "" rather than prompt text alone. Masterminds investigate read-only.
-    # Assistants (execution stage) get real Edit/Write tools since their job is to
-    # actually change the codebase — reviewed via git diff afterward, not trusted blind.
+    # Which CLI/backend runs this task is a task-level property, same as `mode` — resolved
+    # once here, at the top, so every call site below (including /tasks/{id}/retry, which
+    # just calls start_run again) automatically uses whichever backend the task was created
+    # with, with zero extra plumbing.
+    task = db.get_task(task_id)
+    assert task is not None
+    backend = BACKENDS[task["agent"]]
+
+    # Supervisor must not investigate code (agents/supervisor/prompt.md) — enforced via a
+    # "none" capability tier rather than prompt text alone. Masterminds investigate
+    # read-only. Assistants (execution stage) get real write capability since their job is
+    # to actually change the codebase — reviewed via git diff afterward, not trusted blind.
     # All non-execution stages avoid inheriting this process's own cwd (this repo), which
     # would leak this dev session's own project-scoped auto-memory into the agent's
-    # context, and get --safe-mode to disable this user's global hooks/plugins/CLAUDE.md
-    # (e.g. a Ponytail persona hook observed leaking a "prompt injection" preamble into a
-    # real run) without breaking normal OAuth auth, unlike --bare.
-    extra_env: Dict[str, str] = {}
+    # context, and run isolated from this user's own global hooks/plugins/CLAUDE.md
+    # equivalent (e.g. a Ponytail persona hook observed leaking a "prompt injection"
+    # preamble into a real run) without breaking normal OAuth auth.
     if stage == "context":
         cwd: Optional[Path] = db.PPM_ROOT / project_id
-        tool_flags = ["--tools", "", "--safe-mode"]
+        capability = StageCapability(tier="none")
     elif stage == "discuss":
         # cwd stays a per-task sandbox outside any real repo regardless of workspace_path --
-        # Write is only ever offered relative to/within reach of that sandbox in spirit, and
-        # is *enforced* there by write_gate.py (a real PreToolUse hook, not just cwd
-        # convention -- confirmed via live spike that a declarative --settings deny rule for
-        # a path is silently ignored under acceptEdits, but a hook reliably blocks it). No
-        # --safe-mode here (unlike every other stage) -- --safe-mode silently disables hooks
-        # entirely, which would disable write_gate.py itself; this trades away this stage's
-        # protection from the user's own global hooks/plugins/CLAUDE.md leaking in, the same
-        # tradeoff already accepted for Bash-capable execution-stage Assistants below.
+        # writes are only ever offered relative to/within reach of that sandbox in spirit,
+        # and are *enforced* there per-backend (Claude: write_gate.py, a real PreToolUse
+        # hook, not just cwd convention; Codex: the OS sandbox's writable_roots, confined to
+        # cwd by default). `read_workspace` grants read-only access to the real repo
+        # separately, only when there's an actual workspace to read -- a greenfield project
+        # with no workspace_path behaves exactly as before (chat + search + sandboxed
+        # write, nothing to read).
         cwd = db.PPM_ROOT / project_id / "discussions" / task_id
         cwd.mkdir(parents=True, exist_ok=True)
-        tools = ["WebSearch", "Write"]
-        add_dir_flags: List[str] = []
+        read_workspace = None
         if workspace_path and Path(workspace_path).expanduser().is_dir():
-            # Read-only codebase access, added only when there's an actual workspace to
-            # read -- a greenfield project with no workspace_path behaves exactly as before
-            # (chat + search + sandboxed write, nothing to read).
-            tools += ["Read", "Grep", "Glob"]
-            add_dir_flags = ["--add-dir", str(Path(workspace_path).expanduser())]
-        if image_paths and "Read" not in tools:
-            # An attached image needs Read regardless of workspace access -- a greenfield
-            # project (no workspace_path) can still have a screenshot attached to it.
-            tools.append("Read")
-        tool_flags = [
-            "--tools", ",".join(tools),
-            "--permission-mode", "acceptEdits",
-            "--settings", _write_gate_settings(),
-            *add_dir_flags,
-        ]
-        extra_env = {"ENIAC_DISCUSSION_SANDBOX": str(cwd)}
+            read_workspace = Path(workspace_path).expanduser()
+        capability = StageCapability(
+            tier="write", confine_writes=True, web_search=True, read_workspace=read_workspace,
+        )
+    elif stage == "patch":
+        # Same shape as execution's Bash-having Assistants (Test/CI-CD Implementer) --
+        # real write+Bash against the actual workspace, Bash gated per-command through the
+        # same human-approval mechanism.
+        assert workspace_path is not None
+        cwd = Path(workspace_path).expanduser()
+        capability = StageCapability(tier="full")
     elif stage in ("requirements", "tasks", "consultation"):
         assert workspace_path is not None
         cwd = Path(workspace_path).expanduser()
-        tool_flags = ["--tools", "Read,Grep,Glob", "--safe-mode"]
+        capability = StageCapability(tier="investigate")
     elif stage == "execution":
         assert workspace_path is not None and assistant is not None
         cwd = Path(workspace_path).expanduser()
-        tools_str = ASSISTANT_TOOLS[assistant]
-        tool_flags = ["--tools", tools_str]
-        # Edit/Write/Bash being in --tools isn't enough in non-interactive -p mode — without
-        # an explicit permission mode, the CLI denies the actual calls (found via two real
-        # runs: "permission_denials" in the transcript, task_item stuck in-progress).
-        # acceptEdits auto-accepts Edit/Write; Bash is gated separately, per-command, by the
-        # PreToolUse hook registered via --settings (confirmed live: a hook's explicit
-        # allow/deny decision is honored without needing bypassPermissions at all — the hook
-        # fires before the permission-mode check). Review gets neither flag — it has no write
-        # tools, nothing to grant permission for.
-        if "Bash" in tools_str:
-            tool_flags += ["--permission-mode", "acceptEdits", "--settings", _bash_hook_settings()]
-            extra_env = {"ENIAC_BACKEND_URL": ENIAC_BACKEND_URL, "ENIAC_RUN_ID": run_id, "ENIAC_TASK_ID": task_id}
-        else:
-            # --safe-mode disables hooks outright -- confirmed live: the exact same
-            # PreToolUse hook, passed via this same --settings mechanism, silently stops
-            # firing under --safe-mode even though it's supplied fresh on this invocation,
-            # not read from the user's own config. So this only ever applies to an
-            # Assistant with no Bash (Design/Implementation/Review today) -- one with Bash
-            # keeps normal hooks/plugins/CLAUDE.md active, since disabling --safe-mode's
-            # hook-suppression would silently remove the per-command approval gate above,
-            # not just the user's own customizations. Eniac's own skills mechanism
-            # (_skills_block) is unaffected either way -- it reads SKILL.md straight off
-            # disk into the prompt string in this Python process, never through the CLI's
-            # own skill-loading, so --safe-mode has nothing to disable there.
-            tool_flags += ["--safe-mode"]
-            if any(t in tools_str for t in ("Edit", "Write")):
-                tool_flags += ["--permission-mode", "acceptEdits"]
+        capability = StageCapability(tier=ASSISTANT_TIERS[assistant])
     else:
         cwd = None
-        tool_flags = []
+        capability = StageCapability(tier="none")
 
     # Only the tasks stage ever needs to know about multiple repos, and only when the
     # workspace actually has more than one — an ordinary single-repo project's tasks-stage
@@ -1122,39 +979,27 @@ async def start_run(
                 + "\n".join(catalog_lines)
             )
 
-    model_flags = ["--model", _model_for_stage(stage, assistant)]
-
     # "requirements" only ever gets image_paths on its fresh call in practice (nothing on
     # the resume path passes them), so this being computed once here rather than only in
     # the fresh branch below is a no-op widening for that stage -- unlike "discuss", whose
     # follow-ups are genuinely new turns that might each bring a different image, so this
-    # has to be available to both the fresh and resumed paths.
+    # has to be available to both the fresh and resumed paths. Backends grant read access
+    # to each image's directory themselves (see AgentBackend.run's `image_paths` param) --
+    # runs.py only decides *whether* a stage's images reach the model at all, by whether it
+    # passes `image_paths` through below.
     images_block = ""
-    image_dir_flags: List[str] = []
-    if stage in ("requirements", "discuss") and image_paths:
+    if stage in ("requirements", "discuss", "patch") and image_paths:
         image_list = "\n".join(f"- `{p}`" for p in image_paths)
         images_block = (
             "\n\nThe user attached the following image file(s) with this message. Use "
             f"the Read tool to view any that are relevant:\n{image_list}"
         )
-        # Read being in --tools isn't enough on its own for a path outside this stage's own
-        # cwd -- found live: the attachments dir lives under PPM_ROOT, so a Read call
-        # against it was denied even with Read granted, same class of non-interactive-mode
-        # gap as Edit/Write needing acceptEdits above, just for out-of-cwd reads
-        # specifically. --add-dir grants exactly those directories without loosening
-        # anything else.
-        image_dirs = sorted({str(Path(p).parent) for p in image_paths})
-        for d in image_dirs:
-            image_dir_flags += ["--add-dir", d]
+    backend_image_paths = image_paths if stage in ("requirements", "discuss", "patch") else None
 
     if resume_session_id is not None:
         reminder = _RESUME_REMINDERS.get(stage)
         suffix = f"{repo_guidance}{skills_guidance}{images_block}"
-        resumed_prompt = f"{prompt}\n\n---\n\n{reminder}{suffix}" if reminder else f"{prompt}{suffix}"
-        command = [
-            "claude", "-r", resume_session_id, "-p", resumed_prompt,
-            "--output-format", "json", *tool_flags, *model_flags, *image_dir_flags,
-        ]
+        final_prompt = f"{prompt}\n\n---\n\n{reminder}{suffix}" if reminder else f"{prompt}{suffix}"
     else:
         if stage == "context":
             stage_prompt = SUPERVISOR_PROMPT_PATH.read_text()
@@ -1163,6 +1008,8 @@ async def start_run(
         elif stage == "execution":
             assert mastermind is not None and assistant is not None
             stage_prompt = assistant_prompt_path(mastermind, assistant).read_text()
+        elif stage == "patch":
+            stage_prompt = PATCH_PROMPT_PATH.read_text()
         else:
             assert mastermind is not None
             stage_prompt = mastermind_prompt_path(mastermind).read_text()
@@ -1178,62 +1025,75 @@ async def start_run(
         # caller) rather than the task's.
         if stage in ("requirements", "tasks", "consultation", "execution"):
             context_block = _project_context_block(project_id, repo_scope, mastermind)
-        elif stage == "discuss":
+        elif stage in ("discuss", "patch"):
+            # Patch has no single mastermind to scope conventions.md by, same reasoning
+            # as Discuss -- pulls in architecture.md plus every domain's conventions.md.
             context_block = _discussion_context_block(project_id, repo_scope)
         else:
             context_block = ""
         # Only fires on this same fresh-call path as context_block, for the same reason:
         # a reject/retry resumes the item's own prior session, which already saw this.
         skill_block = _skills_block(skills or []) if stage == "execution" else ""
-        combined_prompt = (
+        final_prompt = (
             f"{skill_block}{context_block}{stage_prompt}\n\n---\n\n{label}:\n{prompt}"
             f"{repo_guidance}{skills_guidance}{images_block}{workspace_guidance}"
         )
-        command = [
-            "claude", "-p", combined_prompt, "--output-format", "json",
-            *tool_flags, *model_flags, *image_dir_flags,
-        ]
 
-    process = await asyncio.create_subprocess_exec(
-        *command,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-        cwd=cwd,
-        env={**os.environ, **extra_env} if extra_env else None,
-    )
-
-    transcript_lines = []
-    assert process.stdout is not None
-    async for line in process.stdout:
-        transcript_lines.append(line.decode(errors="replace"))
-
-    await process.wait()
-    transcript = "".join(transcript_lines)
-    status = "completed" if process.returncode == 0 else "failed"
-    db.complete_run(run_id, status, transcript)
+    try:
+        result = await backend.run(
+            run_id=run_id,
+            task_id=task_id,
+            prompt=final_prompt,
+            stage=stage,
+            assistant=assistant,
+            cwd=cwd,
+            capability=capability,
+            resume_session_id=resume_session_id,
+            image_paths=backend_image_paths,
+            item_id=item_id,
+        )
+    except Exception as exc:
+        # Distinct from the per-stage try/except below, which only ever sees a *process
+        # that actually ran and exited* -- this one catches a backend that never got that
+        # far at all (confirmed live: a FileNotFoundError from a misconfigured PATH
+        # resolving the CLI binary propagated straight out of backend.run(), past
+        # start_run entirely, since it's scheduled fire-and-forget -- the task sat at
+        # "running" forever with no process alive and no error surfaced, since nothing
+        # downstream of this call ever ran to record one). Every exit path from here on
+        # must reach `mark_task_failed` and the queue's _DONE sentinel, or this same
+        # stuck-forever failure mode reopens for whatever the next unanticipated exception
+        # turns out to be.
+        db.complete_run(run_id, "failed", f"{task['agent']} failed to start: {exc}")
+        db.mark_task_failed(task_id, f"{task['agent']} failed to start: {exc}")
+        await queue.put(_DONE)  # type: ignore[arg-type]
+        return
+    status = "completed" if result.success else "failed"
+    db.complete_run(run_id, status, result.raw_transcript)
 
     if stage == "discuss":
         if status == "completed":
             try:
-                wrapper = json.loads(transcript)
-                session_id = wrapper["session_id"]
-                result_text = wrapper["result"]
+                session_id = result.session_id
+                result_text = result.result_text
                 await queue.put(result_text)
 
                 # Plain prose, not JSON — the one stage in this system with no structured
                 # handoff to validate. The reply is the deliverable, shown to the user as-is.
+                # Persisted onto the run row itself (not re-derived from `transcript` later)
+                # since that raw shape is backend-specific -- main.py's message-history
+                # endpoint reads this column directly instead.
+                db.set_run_summary(run_id, result_text)
                 db.set_task_awaiting_reply(task_id, session_id)
             except Exception as exc:
                 db.mark_task_failed(task_id, f"Failed to process agent response: {exc}")
         else:
-            db.mark_task_failed(task_id, _process_failure_reason(process.returncode, transcript))
+            db.mark_task_failed(task_id, _process_failure_reason(task["agent"], result.returncode, result.raw_transcript))
 
     elif stage == "context":
         if status == "completed":
             try:
-                wrapper = json.loads(transcript)
-                session_id = wrapper["session_id"]
-                result_text = wrapper["result"]
+                session_id = result.session_id
+                result_text = result.result_text
                 await queue.put(result_text)
 
                 data = _parse_supervisor_json(result_text)
@@ -1248,14 +1108,13 @@ async def start_run(
                 # failure here must not leave the task stuck in "running" forever.
                 db.mark_task_failed(task_id, f"Failed to process agent response: {exc}")
         else:
-            db.mark_task_failed(task_id, _process_failure_reason(process.returncode, transcript))
+            db.mark_task_failed(task_id, _process_failure_reason(task["agent"], result.returncode, result.raw_transcript))
 
     elif stage == "requirements":
         if status == "completed":
             try:
-                wrapper = json.loads(transcript)
-                session_id = wrapper["session_id"]
-                result_text = wrapper["result"]
+                session_id = result.session_id
+                result_text = result.result_text
                 await queue.put(result_text)
 
                 data = _parse_mastermind_json(result_text)
@@ -1266,22 +1125,19 @@ async def start_run(
                     )
                 else:
                     assert mastermind is not None
-                    task = db.get_task(task_id)
-                    assert task is not None
                     _write_requirements(
                         project_id, task_id, mastermind, task["feature_slug"], session_id, data
                     )
             except Exception as exc:
                 db.mark_task_failed(task_id, f"Failed to process agent response: {exc}")
         else:
-            db.mark_task_failed(task_id, _process_failure_reason(process.returncode, transcript))
+            db.mark_task_failed(task_id, _process_failure_reason(task["agent"], result.returncode, result.raw_transcript))
 
     elif stage == "tasks":
         if status == "completed":
             try:
-                wrapper = json.loads(transcript)
-                session_id = wrapper["session_id"]
-                result_text = wrapper["result"]
+                session_id = result.session_id
+                result_text = result.result_text
                 await queue.put(result_text)
 
                 assert mastermind is not None
@@ -1292,8 +1148,6 @@ async def start_run(
                         status="awaiting_tasks_clarification",
                     )
                 else:
-                    task = db.get_task(task_id)
-                    assert task is not None
                     _write_tasks(
                         project_id, task_id, mastermind, task["feature_slug"], session_id, data,
                         workspace_path=workspace_path,
@@ -1301,15 +1155,14 @@ async def start_run(
             except Exception as exc:
                 db.mark_task_failed(task_id, f"Failed to process agent response: {exc}")
         else:
-            db.mark_task_failed(task_id, _process_failure_reason(process.returncode, transcript))
+            db.mark_task_failed(task_id, _process_failure_reason(task["agent"], result.returncode, result.raw_transcript))
 
     elif stage == "execution":
         assert item_id is not None
         if status == "completed":
             try:
-                wrapper = json.loads(transcript)
-                session_id = wrapper["session_id"]
-                result_text = wrapper["result"]
+                session_id = result.session_id
+                result_text = result.result_text
                 await queue.put(result_text)
 
                 data = _parse_assistant_json(result_text, mastermind)
@@ -1327,9 +1180,8 @@ async def start_run(
                     # same PPM feature-directory convention as _write_requirements/
                     # _write_tasks, for Implementation's execution_prompt to fold in later.
                     if assistant == "Design":
-                        task_row = db.get_task(task_id)
                         feature_dir = (
-                            db.PPM_ROOT / project_id / mastermind / "features" / task_row["feature_slug"]
+                            db.PPM_ROOT / project_id / mastermind / "features" / task["feature_slug"]
                         )
                         feature_dir.mkdir(parents=True, exist_ok=True)
                         (feature_dir / "design.md").write_text(data["summary"])
@@ -1361,14 +1213,36 @@ async def start_run(
             except Exception as exc:
                 db.mark_task_failed(task_id, f"Failed to process agent response: {exc}")
         else:
-            db.mark_task_failed(task_id, _process_failure_reason(process.returncode, transcript))
+            db.mark_task_failed(task_id, _process_failure_reason(task["agent"], result.returncode, result.raw_transcript))
+
+    elif stage == "patch":
+        if status == "completed":
+            try:
+                session_id = result.session_id
+                result_text = result.result_text
+                await queue.put(result_text)
+
+                # "done" and "blocked" are deliberately not distinguished here -- both
+                # land on the same review gate with whatever summary/reason text and
+                # diff (possibly empty, for "blocked") the agent produced. Rejecting
+                # with feedback is already the "give it guidance and let it retry"
+                # mechanism, so a second state isn't needed.
+                data = _parse_assistant_json(result_text, mastermind=None)
+                assert cwd is not None
+                db.set_run_diff(
+                    run_id, working_tree_diff(cwd), summary=data.get("summary") or data.get("reason")
+                )
+                db.set_task_patch_ready(task_id, session_id)
+            except Exception as exc:
+                db.mark_task_failed(task_id, f"Failed to process agent response: {exc}")
+        else:
+            db.mark_task_failed(task_id, _process_failure_reason(task["agent"], result.returncode, result.raw_transcript))
 
     elif stage == "consultation":
         if status == "completed":
             try:
-                wrapper = json.loads(transcript)
-                session_id = wrapper["session_id"]
-                result_text = wrapper["result"]
+                session_id = result.session_id
+                result_text = result.result_text
                 await queue.put(result_text)
 
                 assert mastermind is not None
@@ -1403,7 +1277,7 @@ async def start_run(
             except Exception as exc:
                 db.mark_task_failed(task_id, f"Failed to process agent response: {exc}")
         else:
-            db.mark_task_failed(task_id, _process_failure_reason(process.returncode, transcript))
+            db.mark_task_failed(task_id, _process_failure_reason(task["agent"], result.returncode, result.raw_transcript))
 
     await queue.put(_DONE)  # type: ignore[arg-type]
 
@@ -1589,7 +1463,7 @@ async def start_context_refresh(run_id: str, project_id: str, workspace_path: st
         returncode, transcript = await _run_claude_once(
             prompt_text,
             cwd,
-            ["--tools", "Read,Grep,Glob", "--safe-mode", "--model", ROLE_MODELS["context_investigator"]],
+            ["--tools", "Read,Grep,Glob", "--safe-mode", "--model", ClaudeBackend.ROLE_MODELS["context_investigator"]],
         )
         if returncode != 0:
             errors.append(f"{label}: {_process_failure_reason(returncode, transcript)}")

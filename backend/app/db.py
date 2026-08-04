@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     repo_scope TEXT,
     image_paths TEXT,
     mode TEXT NOT NULL DEFAULT 'ship',
+    agent TEXT NOT NULL DEFAULT 'claude',
     title TEXT,
     created_at TEXT NOT NULL
 );
@@ -176,6 +177,7 @@ def init_db() -> None:
             "repo_scope TEXT",
             "image_paths TEXT",
             "mode TEXT NOT NULL DEFAULT 'ship'",
+            "agent TEXT NOT NULL DEFAULT 'claude'",
             "title TEXT",
         ):
             try:
@@ -211,6 +213,35 @@ def init_db() -> None:
         # "." (the task's own effective workspace_path, unchanged) for every row that
         # predates per-item repo scoping — matches the same default new rows get.
         conn.execute("UPDATE task_items SET repo = '.' WHERE repo IS NULL")
+        # Backfill for discuss-stage runs that predate `set_run_summary` (introduced when
+        # the multi-agent backend refactor exposed that `main.py`'s Discuss message history
+        # used to re-parse `transcript` directly, assuming Claude's single-JSON-blob shape --
+        # a shape only Claude's raw_transcript actually has). Handles both raw shapes seen in
+        # the wild: Claude's single `{"result": ...}` blob, and Codex's JSONL event stream
+        # (last `item.completed` event of type `agent_message`, same extraction
+        # `CodexBackend._parse_jsonl` does for a live run -- duplicated inline here rather
+        # than imported, since this is a one-time migration and db.py otherwise has no
+        # reason to depend on agents/). Skips (leaves NULL, same as an unset summary today)
+        # anything that matches neither, rather than risk the migration itself failing.
+        for row in conn.execute(
+            "SELECT id, transcript FROM runs WHERE stage = 'discuss' AND status = 'completed' "
+            "AND summary IS NULL AND transcript IS NOT NULL"
+        ).fetchall():
+            reply = None
+            try:
+                reply = json.loads(row["transcript"])["result"]
+            except (json.JSONDecodeError, KeyError, TypeError):
+                for line in row["transcript"].splitlines():
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if event.get("type") == "item.completed":
+                        item = event.get("item") or {}
+                        if item.get("type") == "agent_message":
+                            reply = item.get("text")
+            if reply is not None:
+                conn.execute("UPDATE runs SET summary = ? WHERE id = ?", (reply, row["id"]))
         for column in ("feedback TEXT",):
             try:
                 conn.execute(f"ALTER TABLE bash_approvals ADD COLUMN {column}")
@@ -292,12 +323,13 @@ def insert_task(
     repo_scope: Optional[str] = None,
     image_paths: Optional[str] = None,
     mode: str = "ship",
+    agent: str = "claude",
 ) -> None:
     with connect() as conn:
         conn.execute(
-            "INSERT INTO tasks (id, project_id, prompt, status, repo_scope, image_paths, mode, created_at) "
-            "VALUES (?, ?, ?, 'running', ?, ?, ?, ?)",
-            (task_id, project_id, prompt, repo_scope, image_paths, mode, now()),
+            "INSERT INTO tasks (id, project_id, prompt, status, repo_scope, image_paths, mode, agent, created_at) "
+            "VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?)",
+            (task_id, project_id, prompt, repo_scope, image_paths, mode, agent, now()),
         )
 
 
@@ -407,6 +439,15 @@ def set_task_tasks_ready(task_id: str, session_id: str) -> None:
     with connect() as conn:
         conn.execute(
             "UPDATE tasks SET status = 'tasks_ready', session_id = ?, "
+            "pending_questions = NULL WHERE id = ?",
+            (session_id, task_id),
+        )
+
+
+def set_task_patch_ready(task_id: str, session_id: str) -> None:
+    with connect() as conn:
+        conn.execute(
+            "UPDATE tasks SET status = 'patch_ready', session_id = ?, "
             "pending_questions = NULL WHERE id = ?",
             (session_id, task_id),
         )
@@ -740,6 +781,17 @@ def set_run_diff(run_id: str, diff: str, summary: Optional[str] = None) -> None:
         conn.execute(
             "UPDATE runs SET diff = ?, summary = ? WHERE id = ?", (diff, summary, run_id)
         )
+
+
+def set_run_summary(run_id: str, summary: str) -> None:
+    """Discuss mode's equivalent of `set_run_diff`'s `summary` -- no diff concept applies
+    there, so a dedicated setter instead of passing an unused empty `diff` through the
+    diff-shaped one. Lets `main.py`'s Discuss message history read the agent's reply
+    straight off the `runs` row instead of re-parsing `transcript`, whose raw shape is
+    backend-specific (Claude: one JSON blob; Codex: a JSONL event stream) and has no
+    business being interpreted outside `agents/`."""
+    with connect() as conn:
+        conn.execute("UPDATE runs SET summary = ? WHERE id = ?", (summary, run_id))
 
 
 def set_run_replay_params(run_id: str, replay_params_json: str) -> None:

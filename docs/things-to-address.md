@@ -54,28 +54,87 @@ simpler direct-edit model.
 
 **Found:** 2026-08-01, during a token-usage optimization pass.
 
-**What's missing:** `runs.py`'s `ROLE_MODELS` dict hardcodes which Claude model
-each role (Supervisor, Context Investigator, Mastermind, each Assistant) uses
-— there's no UI or API to view/change it, unlike `ASSISTANT_TOOLS`'s sibling
-concept of per-assistant tool grants, which at least has precedent for being
+**What's missing:** each `AgentBackend`'s `ROLE_MODELS` dict (moved from
+`runs.py` into `backend/app/agents/claude.py` and `codex.py` during the
+multi-agent backend restructure) hardcodes which model each role (Supervisor,
+Context Investigator, Mastermind, each Assistant) uses per backend — there's
+no UI or API to view/change it, unlike `ASSISTANT_TIERS`'s sibling concept of
+per-assistant capability tiers, which at least has precedent for being
 inspected via the app. A user who wants a different tier (e.g. bump `Decision`
 to Opus, or try `Implementation` on Haiku) has to hand-edit the backend.
 
-**Current workaround:** none — `ROLE_MODELS` in `backend/app/runs.py` is the
-only way to change this, and requires a backend restart to take effect.
+**Current workaround:** none — each backend's `ROLE_MODELS` class attribute is
+the only way to change this, and requires a backend restart to take effect.
 
 **Fix, when it's time:** extend into a real setting — a `model_settings` DB
-table (role -> model), seeded from today's `ROLE_MODELS` values, `GET`/`PUT`
-endpoints, and a settings dialog (there's no global/app-level settings surface
-today, only `ProjectSettingsDialog`, which is per-project — this would be the
-first one). Already scoped in detail once during the optimization pass that
-added `ROLE_MODELS`; re-derive from `_model_for_stage`'s role keys rather than
-starting over. Note `mastermind` must stay a single shared setting across
+table (backend, role -> model), seeded from today's `ROLE_MODELS` values,
+`GET`/`PUT` endpoints, and a settings dialog (there's no global/app-level
+settings surface today, only `ProjectSettingsDialog`, which is per-project —
+this would be the first one). Already scoped in detail once during the
+optimization pass that added `ROLE_MODELS`; re-derive from
+`agents.base.role_key_for_stage`'s role keys rather than starting over. Note
+`mastermind` must stay a single shared setting across
 requirements/tasks/consultation (not split by stage) — tasks/consultation
 resume the requirements session, and switching models on a resumed call
-forfeits part of the prompt cache (measured live: same-model resume reused
-~27.5k cached tokens for 173 new ones; different-model resume on the same
-session reused only ~15.6k and re-paid ~5k fresh).
+forfeits part of the prompt cache (measured live on Claude: same-model resume
+reused ~27.5k cached tokens for 173 new ones; different-model resume on the
+same session reused only ~15.6k and re-paid ~5k fresh).
+
+## Codex `ROLE_MODELS` has no real per-tier model names
+
+**Found:** 2026-08-04, building the Codex agent backend.
+
+**What's missing:** every `CodexBackend.ROLE_MODELS` entry (in
+`backend/app/agents/codex.py`) defaults to the single model name found in this
+machine's own `~/.codex/config.toml` (`gpt-5.6-terra`) — no verified
+cheaper/faster Codex model exists yet the way Claude has "haiku", so
+Codex-backed tasks get zero cost-tiering today (every role runs at full
+price).
+
+**Current workaround:** flat table, one model name everywhere.
+
+**Fix, when it's time:** find Codex's real model catalog (cheap/fast vs.
+capable) and tier `ROLE_MODELS` the way `ClaudeBackend`'s table was tiered —
+see the "Per-role model tiering" entry above for the reasoning that produced
+Claude's tiers, most of which (weak output caught downstream vs. shipped
+directly) should transfer.
+
+## Codex Discuss-mode web search sometimes asks for permission instead of searching
+
+**Found:** 2026-08-04, live during Codex backend testing — a real Discuss
+task asked "I need permission to use web search — go ahead and approve it"
+instead of just searching.
+
+**What's missing:** `CodexBackend.run`'s `-c web_search=live` flag is
+confirmed working — reproduced 3/3 live runs (including one using the user's
+exact reported prompt) with `web_search=True` capability, all completing a
+real live search successfully with no permission prompt. The likely real
+cause: `agents/discussion/prompt.md` (shared across both backends) used to
+name literal Claude tool names ("Read, Grep, Glob", "Edit", "Bash",
+"WebSearch") — Codex has no tool literally called `WebSearch` (its live
+search is a differently-named, differently-invoked native capability), so
+reading "Use WebSearch" may lead it to conclude it lacks that capability and
+ask, even though the actual capability is live and enabled. Fixed for
+Discuss mode specifically: `agents/discussion/prompt.md` now describes
+capabilities generically ("Live web search is already enabled for you — use
+it directly, without asking first") instead of naming tools by their
+Claude-specific names.
+
+**Current workaround:** the same literal-Claude-tool-naming pattern exists in
+14 other prompt.md files (`agents/patch/prompt.md` and every
+`agents/assistants/*/*/prompt.md`) — not touched yet, since execution-stage
+Assistants get their tool grants enforced structurally (via `ASSISTANT_TIERS`
++ each backend's own tier→flags mapping), not by the model reading a tool
+name and deciding whether it has permission, so the failure mode observed in
+Discuss mode (a hosted, prose-described capability) may not apply the same
+way to Edit/Write/Bash-shaped instructions enforced by the sandbox/hooks
+regardless of what the prompt calls them. Unverified either way.
+
+**Fix, when it's time:** if a Codex-backed execution-stage Assistant is ever
+seen hesitating over "permission" for Edit/Write/Bash the way Discuss mode
+did for WebSearch, do the same pass across all 14 files — replace literal
+Claude tool names with capability descriptions. Until then, treat this as
+resolved for Discuss mode and open only for the untested rest.
 
 ## Resolved
 

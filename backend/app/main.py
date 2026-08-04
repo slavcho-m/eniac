@@ -54,7 +54,10 @@ class TaskCreateBody(BaseModel):
     prompt: str
     repo_scope: Optional[str] = None
     image_paths: Optional[List[str]] = None
-    mode: Literal["discuss", "ship"] = "ship"
+    mode: Literal["discuss", "patch", "ship"] = "ship"
+    # Kept in sync by hand with backend.app.agents.BACKENDS' keys -- not worth dynamic
+    # validation machinery for 2 backends, same stance `mode` already takes here.
+    agent: Literal["claude", "codex"] = "claude"
 
 
 class RespondBody(BaseModel):
@@ -208,6 +211,14 @@ def _git_status_porcelain(workspace_path: str) -> Optional[str]:
         ["git", "-C", workspace_path, "status", "--porcelain"], capture_output=True, text=True
     )
     return result.stdout if result.returncode == 0 else None
+
+
+def _revert_working_tree(workspace_path: str) -> None:
+    """Plain revert for a rejected Patch attempt -- not a checkpoint restore (Patch never
+    creates one, since it's always exactly one shot). Never runs `git clean -fd` (too
+    destructive against a real workspace), so new untracked files the attempt created are
+    deliberately left behind, same policy `review_artifact`'s reject path already documents."""
+    subprocess.run(["git", "checkout", "--", "."], cwd=workspace_path, check=True)
 
 
 def _resolve_ppm_path(relative_path: str) -> Path:
@@ -463,6 +474,19 @@ async def create_task(project_id: str, body: TaskCreateBody):
     if project is None:
         raise HTTPException(404, f"project '{project_id}' not found")
 
+    # Patch mode has no Supervisor/Mastermind stage to catch a bad workspace implicitly --
+    # checked upfront here instead, same wording/status codes approve_assistant already
+    # uses for the equivalent Ship-mode guards.
+    if body.mode == "patch":
+        patch_workspace_path = _effective_workspace_path(project, {"repo_scope": body.repo_scope})
+        if not patch_workspace_path or not Path(patch_workspace_path).expanduser().is_dir():
+            raise HTTPException(400, "Patch mode requires a project workspace_path pointing to an existing directory")
+        patch_git_status = _git_status_porcelain(patch_workspace_path)
+        if patch_git_status is None:
+            raise HTTPException(400, "workspace_path is not a git repository")
+        if patch_git_status.strip():
+            raise HTTPException(409, "workspace_path has uncommitted changes; commit or stash before starting a Patch task")
+
     image_paths_json = None
     if body.image_paths:
         for p in body.image_paths:
@@ -473,15 +497,16 @@ async def create_task(project_id: str, body: TaskCreateBody):
     task_id = uuid.uuid4().hex
     db.insert_task(
         task_id, project_id, body.prompt,
-        repo_scope=body.repo_scope, image_paths=image_paths_json, mode=body.mode,
+        repo_scope=body.repo_scope, image_paths=image_paths_json, mode=body.mode, agent=body.agent,
     )
 
-    stage = "discuss" if body.mode == "discuss" else "context"
-    # Only the discuss stage actually uses these on this fresh-call path (context/Supervisor
+    stage = "discuss" if body.mode == "discuss" else "patch" if body.mode == "patch" else "context"
+    # Only discuss/patch actually use these on this fresh-call path (context/Supervisor
     # never touches a workspace, and never reads images) -- harmless to pass through
-    # unconditionally either way. Discuss mode has no separate "confirm" step like ship
-    # mode does, so this first call is the only place an initial attached image can reach
-    # start_run at all -- absolute-path conversion mirrors confirm_context's own below.
+    # unconditionally either way. Neither discuss nor patch has a separate "confirm" step
+    # like ship mode does, so this first call is the only place an initial attached image
+    # can reach start_run at all -- absolute-path conversion mirrors confirm_context's own
+    # below.
     workspace_path = _effective_workspace_path(project, {"repo_scope": body.repo_scope})
     image_paths = [str(db.PPM_ROOT / p) for p in body.image_paths] if body.image_paths else None
     run_id = runs.new_run_id(stage, body.prompt)
@@ -505,6 +530,7 @@ def _serialize_task(task) -> dict:
         "prompt": task["prompt"],
         "status": task["status"],
         "mode": task["mode"],
+        "agent": task["agent"],
         "title": task["title"],
         "feature_slug": task["feature_slug"],
         "masterminds": json.loads(task["masterminds"]) if task["masterminds"] else None,
@@ -567,6 +593,11 @@ def list_task_files(task_id: str):
     task = db.get_task(task_id)
     if task is None:
         raise HTTPException(404, f"task '{task_id}' not found")
+
+    if task["mode"] == "patch":
+        # Patch produces no persistent .md files -- its only artifact is the diff, shown
+        # inline in the review view, not through FilesPanel.
+        return []
 
     if task["mode"] == "discuss":
         discussion_dir = db.PPM_ROOT / task["project_id"] / "discussions" / task_id
@@ -640,9 +671,11 @@ def list_task_runs(task_id: str):
     for run in db.list_runs_for_task(task_id):
         if run["status"] == "running":
             continue
-        reply = None
-        if run["status"] == "completed" and run["transcript"]:
-            reply = json.loads(run["transcript"])["result"]
+        # `summary` is the agent's clean reply text, persisted by runs.py's discuss-stage
+        # completion (db.set_run_summary) -- NOT re-derived from `transcript` here, whose
+        # raw shape is backend-specific (Claude: one JSON blob; Codex: a JSONL event
+        # stream) and has no business being parsed outside `agents/`.
+        reply = run["summary"] if run["status"] == "completed" else None
         turns.append(
             {
                 "run_id": run["id"],
@@ -711,6 +744,7 @@ async def respond(task_id: str, body: RespondBody):
 IN_FLIGHT_STATUS_BY_STAGE = {
     "context": "running",
     "discuss": "running",
+    "patch": "running",
     "requirements": "investigating",
     "tasks": "planning_tasks",
     "execution": "tasks_ready",
@@ -879,6 +913,61 @@ def approve_tasks(task_id: str):
 
     approved_at = db.approve_task_tasks(task_id)
     return {"task_id": task_id, "tasks_approved_at": approved_at}
+
+
+@app.post("/tasks/{task_id}/approve-patch")
+def approve_patch(task_id: str):
+    task = db.get_task(task_id)
+    if task is None:
+        raise HTTPException(404, f"task '{task_id}' not found")
+    if task["status"] != "patch_ready":
+        raise HTTPException(409, f"task is not ready for patch review (status: {task['status']})")
+
+    db.mark_task_completed(task_id)
+    return {"task_id": task_id, "status": "completed"}
+
+
+@app.post("/tasks/{task_id}/reject-patch")
+async def reject_patch(task_id: str, body: RejectAmendmentBody):
+    task = db.get_task(task_id)
+    if task is None:
+        raise HTTPException(404, f"task '{task_id}' not found")
+    if task["status"] != "patch_ready":
+        raise HTTPException(409, f"task is not ready for patch review (status: {task['status']})")
+    if not body.feedback:
+        raise HTTPException(400, "feedback is required when rejecting")
+
+    project = db.get_project(task["project_id"])
+    workspace_path = _effective_workspace_path(project, task)
+    if not workspace_path or not Path(workspace_path).expanduser().is_dir():
+        raise HTTPException(409, "workspace_path is missing or no longer exists")
+    _revert_working_tree(workspace_path)
+
+    db.set_task_running(task_id)
+
+    run_id = runs.new_run_id("patch", body.feedback)
+    db.insert_run(run_id, task_id, "patch")
+    _fire_and_forget(
+        run_id,
+        runs.start_run(
+            run_id,
+            task_id,
+            task["project_id"],
+            body.feedback,
+            "patch",
+            resume_session_id=task["session_id"],
+            workspace_path=workspace_path,
+        ),
+    )
+    return {"task_id": task_id, "run_id": run_id}
+
+
+@app.get("/tasks/{task_id}/patch-review")
+def get_patch_review(task_id: str):
+    if db.get_task(task_id) is None:
+        raise HTTPException(404, f"task '{task_id}' not found")
+    run = db.get_latest_run_for_task(task_id)
+    return {"diff": (run["diff"] or "") if run else "", "summary": run["summary"] if run else None}
 
 
 @app.post("/tasks/{task_id}/reject-context")
