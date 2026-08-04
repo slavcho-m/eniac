@@ -1,7 +1,8 @@
-import { Sparkles, Terminal } from "lucide-react";
-import type { ComponentType } from "react";
+import { Asterisk, Terminal } from "lucide-react";
+import type { ComponentType, CSSProperties } from "react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { AGENT_ACCENT_COLOR } from "@/lib/agentColors";
 import { cn } from "@/lib/cn";
 import styles from "../ModeSelect/ModeSelect.module.css";
 
@@ -17,7 +18,7 @@ interface AgentOption {
 // Record, not an array -- same reasoning as ModeSelect's MODES. Key order is render order
 // (Claude, Codex).
 const AGENTS: Record<AgentBackend, AgentOption> = {
-  claude: { value: "claude", label: "Claude", description: "Anthropic's Claude Code CLI.", icon: Sparkles },
+  claude: { value: "claude", label: "Claude", description: "Anthropic's Claude Code CLI.", icon: Asterisk },
   codex: { value: "codex", label: "Codex", description: "OpenAI's Codex CLI.", icon: Terminal },
 };
 
@@ -80,7 +81,10 @@ export function AgentSelect({ value, onChange, disabled, title, unavailable }: A
       <button
         ref={triggerRef}
         type="button"
-        className={styles.trigger}
+        className={cn(styles.trigger, styles.agentRing)}
+        // CSS custom properties aren't part of the CSSProperties type.
+        // eslint-disable-next-line typescript/no-unsafe-type-assertion
+        style={{ "--accent-color": AGENT_ACCENT_COLOR[value] } as CSSProperties}
         onClick={toggleOpen}
         disabled={disabled}
         title={title}

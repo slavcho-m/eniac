@@ -48,6 +48,13 @@
   --neutral-bg: rgba(255, 255, 255, 0.06);
   --neutral-border: rgba(255, 255, 255, 0.14);
 
+  /* Agent brand accents — Claude's terracotta / OpenAI's grey, desaturated down from each
+   * vendor's raw brand hex so they sit quietly in this monospace/terminal palette instead
+   * of popping like a marketing color. Used for the composer's border ring (see
+   * PromptInput), so the box reads as "which agent will run this" at a glance. */
+  --claude: #b47864;
+  --codex: #75758a;
+
   /* Buttons */
   --btn-primary-bg: #f3f2ef;
   --btn-primary-text: #0a0a0b;

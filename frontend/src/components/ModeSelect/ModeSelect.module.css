@@ -1,4 +1,5 @@
 .trigger {
+  position: relative;
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
@@ -17,6 +18,67 @@
 .trigger:disabled {
   cursor: not-allowed;
   opacity: 0.35;
+}
+
+/* AgentSelect-only: a standing ring around the trigger in the chosen agent's brand
+ * color -- always on (not a focus/hover effect), so the button reads as "this task will
+ * run Claude/Codex" at a glance. ModeSelect never applies this class. Icon and label pick
+ * up the same color via inheritance (lucide icons stroke with currentColor, and the label
+ * span sets no color of its own). */
+.agentRing {
+  border-color: transparent;
+  color: var(--accent-color);
+}
+
+/* Registered so the browser animates --ring-angle as a real <angle> (interpolating the
+ * number) instead of snapping between keyframes the way an unregistered custom property
+ * would. */
+@property --ring-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+.agentRing::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  /* Solid accent color all the way around -- the only variation is a soft lightened band
+   * that travels around the ring as --ring-angle rotates, easing in and back out so there's
+   * no hard edge (no pulsing/fading, just a slow shimmer circling the border). */
+  background: conic-gradient(
+    from var(--ring-angle),
+    var(--accent-color) 0deg,
+    color-mix(in srgb, var(--accent-color) 85%, white) 20deg,
+    var(--accent-color) 40deg,
+    var(--accent-color) 360deg
+  );
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  animation: ringSpin 6s linear infinite;
+  pointer-events: none;
+}
+
+/* Once the agent is locked in (task started) the trigger is disabled -- the ring stays
+ * visible but goes to a near-grey "disabled" version of the color instead of switching
+ * the animation off, so it still reads as a ring, just inert. */
+.agentRing:disabled::before {
+  filter: saturate(15%);
+}
+
+@keyframes ringSpin {
+  to {
+    --ring-angle: 360deg;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agentRing::before {
+    animation: none;
+  }
 }
 
 .menu {
