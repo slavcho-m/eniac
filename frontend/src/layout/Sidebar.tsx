@@ -1,4 +1,4 @@
-import { ChevronDown, List, Plus } from "lucide-react";
+import { ChevronDown, List, ListPlus, Plus } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate, useParams } from "react-router-dom";
@@ -260,8 +260,9 @@ export function Sidebar({ refreshKey }: SidebarProps) {
         >
           <Button
             variant="secondary"
-            icon={<Plus size={14} strokeWidth={1.75} />}
+            icon={<ListPlus size={14} strokeWidth={1.75} />}
             onClick={() => navigate(`/projects/${projectId}`)}
+            style={{ width: "100%" }}
           >
             New Task
           </Button>
