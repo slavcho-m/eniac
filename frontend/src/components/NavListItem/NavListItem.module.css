@@ -17,6 +17,14 @@
   color: var(--text-primary);
 }
 
+.success {
+  border-left-color: var(--success);
+}
+
+.error {
+  border-left-color: var(--error);
+}
+
 .main {
   display: flex;
   align-items: center;

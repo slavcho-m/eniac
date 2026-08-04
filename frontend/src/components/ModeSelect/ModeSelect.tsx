@@ -1,28 +1,11 @@
-import { MessagesSquare, Rocket, Wrench } from "lucide-react";
-import type { ComponentType } from "react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { cn } from "@/lib/cn";
+import { TASK_MODES } from "@/lib/taskModes";
+import type { TaskMode } from "@/lib/taskModes";
 import styles from "./ModeSelect.module.css";
 
-export type TaskMode = "discuss" | "patch" | "ship";
-
-interface ModeOption {
-  value: TaskMode;
-  label: string;
-  description: string;
-  icon: ComponentType<{ size?: number; strokeWidth?: number; className?: string }>;
-  disabled?: boolean;
-}
-
-// Record, not an array -- indexing by the TaskMode key is guaranteed-present under
-// noUncheckedIndexedAccess (unlike array indexing), same pattern as
-// ExecutionView's BADGE_BY_ITEM_STATUS. Key order is render order (Discuss, Patch, Ship).
-const MODES: Record<TaskMode, ModeOption> = {
-  discuss: { value: "discuss", label: "Discuss", description: "Talk it through — no files touched.", icon: MessagesSquare },
-  patch: { value: "patch", label: "Patch", description: "Find it, fix it, test it — for small bugfixes.", icon: Wrench },
-  ship: { value: "ship", label: "Ship", description: "Full pipeline — investigate, plan, build, review.", icon: Rocket },
-};
+export type { TaskMode };
 
 interface ModeSelectProps {
   value: TaskMode;
@@ -40,7 +23,7 @@ export function ModeSelect({ value, onChange, disabled, title }: ModeSelectProps
   const [position, setPosition] = useState({ bottom: 0, left: 0 });
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
-  const current = MODES[value];
+  const current = TASK_MODES[value];
 
   useEffect(() => {
     if (!open) return undefined;
@@ -93,7 +76,7 @@ export function ModeSelect({ value, onChange, disabled, title }: ModeSelectProps
               role="menu"
               style={{ bottom: position.bottom, left: position.left }}
             >
-              {Object.values(MODES).map((mode) => (
+              {Object.values(TASK_MODES).map((mode) => (
                 <button
                   key={mode.value}
                   type="button"

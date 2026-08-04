@@ -11,13 +11,22 @@ interface NavListItemProps {
   label: ReactNode;
   meta?: string;
   active?: boolean;
+  /** Left-border color-code for a terminal outcome (e.g. a task's completed/failed status)
+   * — omit for items with no such notion. Only shown when not `active`, since the active
+   * highlight already owns that border. */
+  status?: "success" | "error";
   onClick?: () => void;
   onDelete?: () => void;
 }
 
-export function NavListItem({ icon, label, meta, active = false, onClick, onDelete }: NavListItemProps) {
+export function NavListItem({ icon, label, meta, active = false, status, onClick, onDelete }: NavListItemProps) {
   return (
-    <div className={cn(styles.item, active && styles.active)}>
+    <div
+      className={cn(
+        styles.item,
+        active ? styles.active : status && styles[status],
+      )}
+    >
       <button type="button" className={styles.main} onClick={onClick}>
         <span className={styles.icon}>{icon}</span>
         <span className={styles.label}>{label}</span>

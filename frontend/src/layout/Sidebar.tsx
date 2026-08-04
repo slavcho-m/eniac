@@ -1,11 +1,14 @@
-import { CheckSquare, Plus } from "lucide-react";
-import { useState } from "react";
+import { ChevronDown, List, Plus } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useNavigate, useParams } from "react-router-dom";
 import { Button, ConfirmDialog, NavListItem, ProjectSwitcher, SectionLabel } from "@/components";
 import { useProjects } from "@/hooks/useProjects";
 import { useProjectTasks } from "@/hooks/useProjectTasks";
 import { deleteTask } from "@/lib/api";
+import { cn } from "@/lib/cn";
 import { dateGroupLabel, formatRelativeTime } from "@/lib/formatRelativeTime";
+import { TASK_MODES } from "@/lib/taskModes";
 import type { Task } from "@/types/api";
 import { DeleteProjectDialog } from "./DeleteProjectDialog";
 import { ProjectSettingsDialog } from "./ProjectSettingsDialog";
@@ -57,6 +60,38 @@ export function Sidebar({ refreshKey }: SidebarProps) {
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; label: string } | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [projectMenuOpen, setProjectMenuOpen] = useState(false);
+  const [projectMenuPosition, setProjectMenuPosition] = useState({ top: 0, right: 0 });
+  const projectMenuTriggerRef = useRef<HTMLButtonElement>(null);
+  const projectMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!projectMenuOpen) return undefined;
+    function handlePointerDown(e: MouseEvent) {
+      const target = e.target;
+      if (!(target instanceof Node)) return;
+      if (projectMenuTriggerRef.current?.contains(target)) return;
+      if (projectMenuRef.current?.contains(target)) return;
+      setProjectMenuOpen(false);
+    }
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === "Escape") setProjectMenuOpen(false);
+    }
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [projectMenuOpen]);
+
+  function toggleProjectMenu() {
+    if (!projectMenuOpen && projectMenuTriggerRef.current) {
+      const rect = projectMenuTriggerRef.current.getBoundingClientRect();
+      setProjectMenuPosition({ top: rect.bottom + 6, right: window.innerWidth - rect.right });
+    }
+    setProjectMenuOpen((o) => !o);
+  }
 
   const currentProject = projects?.find((p) => p.id === projectId);
   const taskGroups = currentProject?.is_orchestrator
@@ -64,15 +99,21 @@ export function Sidebar({ refreshKey }: SidebarProps) {
     : groupTasksByDate(tasks ?? []);
 
   function renderTaskItem(task: Task) {
+    const mode = TASK_MODES[task.mode];
     return (
       <NavListItem
         key={task.id}
-        icon={<CheckSquare size={15} strokeWidth={1.75} />}
+        icon={
+          <span title={`${mode.label} mode`} style={{ display: "inline-flex" }}>
+            <mode.icon size={15} strokeWidth={1.75} />
+          </span>
+        }
         label={
           task.title ?? task.feature_slug ?? <span className={styles.titleSkeleton} aria-label="Generating title…" />
         }
         meta={formatRelativeTime(task.created_at)}
         active={task.id === taskId}
+        status={task.status === "completed" ? "success" : task.status === "failed" ? "error" : undefined}
         onClick={() => navigate(`/projects/${projectId}/tasks/${task.id}`)}
         onDelete={() => setDeleteTarget({ id: task.id, label: task.feature_slug ?? task.prompt })}
       />
@@ -106,30 +147,64 @@ export function Sidebar({ refreshKey }: SidebarProps) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 4px 16px" }}>
-        <img src="/eniac-icon.svg" alt="" width={20} height={20} />
-        <span style={{ fontSize: "var(--text-label)", fontWeight: "var(--weight-label)", color: "var(--text-primary)" }}>
-          Eniac Workspace
-        </span>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "4px 4px 16px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <img src="/eniac-icon.svg" alt="" width={20} height={20} />
+          <span style={{ fontSize: "var(--text-label)", fontWeight: "var(--weight-label)", color: "var(--text-primary)" }}>
+            Eniac Workspace
+          </span>
+        </div>
+        <button
+          ref={projectMenuTriggerRef}
+          type="button"
+          className={cn(styles.menuTrigger, projectMenuOpen && styles.menuTriggerOpen)}
+          onClick={toggleProjectMenu}
+          title="Project actions"
+          aria-label="Project actions"
+          aria-haspopup="menu"
+          aria-expanded={projectMenuOpen}
+        >
+          <ChevronDown size={15} strokeWidth={1.75} className={styles.menuTriggerIcon} />
+        </button>
+        {projectMenuOpen
+          ? createPortal(
+              <div
+                ref={projectMenuRef}
+                className={styles.menu}
+                role="menu"
+                style={{ top: projectMenuPosition.top, right: projectMenuPosition.right }}
+              >
+                <button
+                  type="button"
+                  className={styles.menuOption}
+                  role="menuitem"
+                  onClick={() => {
+                    setProjectMenuOpen(false);
+                    void navigate("/new-project");
+                  }}
+                >
+                  <Plus size={14} strokeWidth={1.75} className={styles.menuOptionIcon} />
+                  New Project
+                </button>
+                <button
+                  type="button"
+                  className={styles.menuOption}
+                  role="menuitem"
+                  onClick={() => {
+                    setProjectMenuOpen(false);
+                    void navigate("/");
+                  }}
+                >
+                  <List size={14} strokeWidth={1.75} className={styles.menuOptionIcon} />
+                  View All Projects
+                </button>
+              </div>,
+              document.body,
+            )
+          : null}
       </div>
 
       <div style={{ marginBottom: 16, borderTop: "1px solid var(--border-hairline)" }} />
-
-      <Button
-        variant="secondary"
-        icon={<Plus size={14} strokeWidth={1.75} />}
-        onClick={() => navigate("/new-project")}
-      >
-        New Project
-      </Button>
-
-      <div style={{ marginTop: 8, display: "flex", justifyContent: "center" }}>
-        <Button variant="link" onClick={() => navigate("/")}>
-          View All Projects
-        </Button>
-      </div>
-
-      <div style={{ marginTop: 4, borderTop: "1px solid var(--border-hairline)" }} />
 
       <div style={{ marginTop: 16 }}>
         {currentProject ? (
