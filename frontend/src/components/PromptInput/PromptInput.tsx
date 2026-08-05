@@ -18,6 +18,10 @@ interface PromptInputProps
   /** Rendered in the footer bar next to attach. Only the new-task composer passes this
    * (a ModeSelect) — other call sites (amendments, clarifications, consults) leave it unset. */
   modeSelect?: ReactNode;
+  /** Onboarding-tour target id for the wrapper div. Only the new-task composer sets this
+   * — PromptInput is reused by other call sites (reject-feedback, consult) that aren't
+   * "the composer" the tour explains. */
+  dataTour?: string;
 }
 
 /** A textarea with a slim footer bar underneath holding its controls (attach, send) — the
@@ -30,6 +34,7 @@ export function PromptInput({
   onAttach,
   onDropFiles,
   modeSelect,
+  dataTour,
   disabled,
   ...rest
 }: PromptInputProps) {
@@ -67,6 +72,7 @@ export function PromptInput({
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
+      data-tour={dataTour}
     >
       <textarea
         className={styles.textarea}

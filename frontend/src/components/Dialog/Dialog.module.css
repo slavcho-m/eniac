@@ -29,6 +29,13 @@
   border-bottom: 1px solid var(--border-hairline);
 }
 
+.headerActions {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .close {
   flex-shrink: 0;
   display: inline-flex;

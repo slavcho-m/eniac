@@ -167,6 +167,7 @@ export function Sidebar({ refreshKey }: SidebarProps) {
           aria-label="Project actions"
           aria-haspopup="menu"
           aria-expanded={projectMenuOpen}
+          data-tour="project-menu-trigger"
         >
           <ChevronDown size={15} strokeWidth={1.75} className={styles.menuTriggerIcon} />
         </button>
@@ -177,6 +178,7 @@ export function Sidebar({ refreshKey }: SidebarProps) {
                 className={styles.menu}
                 role="menu"
                 style={{ top: projectMenuPosition.top, right: projectMenuPosition.right }}
+                data-tour="project-menu-list"
               >
                 <button
                   type="button"

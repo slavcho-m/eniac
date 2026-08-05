@@ -178,7 +178,7 @@ export function ProjectPage() {
                   </p>
                 ) : null}
               </div>
-              <Button variant="secondary" onClick={handleRefreshContext}>
+              <Button variant="secondary" onClick={handleRefreshContext} data-tour="refresh-context">
                 Refresh Context
               </Button>
             </div>
@@ -271,6 +271,7 @@ export function ProjectPage() {
               onSubmit={handleSubmit}
               onAttach={() => fileInputRef.current?.click()}
               onDropFiles={handleFilesSelected}
+              dataTour="prompt-input"
               modeSelect={
                 <>
                   <ModeSelect

@@ -1,0 +1,152 @@
+/* Base is pointer-events:none so nothing here blocks a click unless a child explicitly
+ * re-enables it -- the "hole" in the allowInteraction case is just an area with no
+ * blocking child over it, not a special cutout mechanism. */
+.root {
+  position: fixed;
+  inset: 0;
+  /* Below Sidebar/ModeSelect/AgentSelect's portaled dropdown menus (z-index: 100) --
+   * matters for the one step that spotlights the real "New Project" menu and lets a
+   * real click open it: that menu must render above this overlay, not under it. */
+  z-index: 50;
+  pointer-events: none;
+}
+
+.fullDim,
+.blocker,
+.blockerBand {
+  position: fixed;
+  background: rgba(0, 0, 0, 0.6);
+  pointer-events: auto;
+}
+
+.fullDim,
+.blocker {
+  inset: 0;
+}
+
+.centerBlocker {
+  position: fixed;
+  background: transparent;
+  pointer-events: auto;
+}
+
+/* Purely decorative -- the box-shadow spread is what visually dims everything outside
+ * this rect; box-shadow paint never participates in hit-testing, so this needs no
+ * pointer-events handling of its own. */
+.spotlight {
+  position: fixed;
+  border: 2px solid var(--info);
+  border-radius: var(--radius-card);
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+  /* No transition: useTargetRect's rAF loop calls getBoundingClientRect() every frame,
+   * which forces a synchronous layout flush -- with an active transition, that flush
+   * keeps re-triggering the animation from its current interpolated point before it can
+   * ever settle, so the box visibly never reaches the real target position (its inline
+   * style is already correct; only the rendered/computed position lags, indefinitely).
+   * Instant repositioning also just reads better for a step-by-step tour anyway. */
+}
+
+.card {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 320px;
+  max-width: calc(100vw - 32px);
+  padding: 18px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-card);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+  pointer-events: auto;
+  color: var(--text-primary);
+}
+
+.cardWide {
+  width: 480px;
+}
+
+.progress {
+  margin: 0 0 8px;
+  font-size: var(--text-hint);
+  letter-spacing: var(--tracking-section);
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+.title {
+  margin: 0 0 6px;
+  font-size: var(--text-label);
+  font-weight: var(--weight-label);
+}
+
+.body {
+  margin: 0;
+  font-size: var(--text-body);
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.images {
+  display: flex;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.figure {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+}
+
+.image {
+  display: block;
+  width: 100%;
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-card);
+}
+
+.caption {
+  margin-top: 6px;
+  font-size: var(--text-hint);
+  text-align: center;
+  color: var(--text-tertiary);
+}
+
+.hint {
+  margin: 12px 0 0;
+  padding: 8px 10px;
+  background: var(--info-bg);
+  border: 1px solid var(--info-border);
+  border-radius: var(--radius-card);
+  font-size: var(--text-hint);
+  color: var(--info);
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.skip {
+  padding: 0;
+  background: none;
+  border: none;
+  font-family: inherit;
+  font-size: var(--text-hint);
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+
+.skip:hover {
+  color: var(--text-secondary);
+}
+
+.navButtons {
+  display: flex;
+  gap: 8px;
+}

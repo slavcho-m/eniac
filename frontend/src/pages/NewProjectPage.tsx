@@ -87,6 +87,7 @@ export function NewProjectPage() {
       <div style={{ display: "flex", flexDirection: "column", gap: 20, maxWidth: 480 }}>
         <FormField
           label="Project Name"
+          data-tour="new-project-fields"
           helperText={
             name.length > 0 && !nameValid ? (
               <span style={{ color: "var(--error)" }}>
@@ -151,7 +152,12 @@ export function NewProjectPage() {
         ) : null}
 
         <div style={{ display: "flex", gap: 12 }}>
-          <Button variant="primary" onClick={handleSubmit} disabled={!canSubmit}>
+          <Button
+            variant="primary"
+            onClick={handleSubmit}
+            disabled={!canSubmit}
+            data-tour="new-project-create"
+          >
             {submitting ? "Creating…" : "Create Project"}
           </Button>
           <Button variant="secondary" onClick={() => navigate("/")}>

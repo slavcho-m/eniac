@@ -90,6 +90,7 @@ export function AgentSelect({ value, onChange, disabled, title, unavailable }: A
         title={title}
         aria-haspopup="menu"
         aria-expanded={open}
+        data-tour="agent-select"
       >
         <current.icon size={13} strokeWidth={1.75} />
         {current.label}

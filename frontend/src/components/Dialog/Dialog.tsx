@@ -11,6 +11,9 @@ interface DialogProps {
   title: string;
   children: ReactNode;
   footer?: ReactNode;
+  /** Extra controls in the header row, between the title and the close button (e.g.
+   * HelpDialog's "Start Tutorial"). */
+  headerActions?: ReactNode;
   /** "large" for content that benefits from more room (e.g. a full diff) — still capped
    * to the viewport height and scrolls internally rather than overflowing it. */
   size?: "default" | "large";
@@ -18,7 +21,7 @@ interface DialogProps {
 
 /** Built on the native <dialog> element — Escape-to-close, a real backdrop, and modal
  * focus handling come from the browser instead of hand-rolled overlay/role/keydown code. */
-export function Dialog({ open, onClose, title, children, footer, size = "default" }: DialogProps) {
+export function Dialog({ open, onClose, title, children, footer, headerActions, size = "default" }: DialogProps) {
   const ref = useRef<HTMLDialogElement>(null);
 
   useEffect(() => {
@@ -47,9 +50,12 @@ export function Dialog({ open, onClose, title, children, footer, size = "default
     >
       <div className={styles.header}>
         <SectionLabel>{title}</SectionLabel>
-        <button type="button" className={styles.close} onClick={onClose} aria-label="Close">
-          <X size={15} strokeWidth={1.75} />
-        </button>
+        <div className={styles.headerActions}>
+          {headerActions}
+          <button type="button" className={styles.close} onClick={onClose} aria-label="Close">
+            <X size={15} strokeWidth={1.75} />
+          </button>
+        </div>
       </div>
       <div className={styles.body}>{children}</div>
       {footer ? <div className={styles.footer}>{footer}</div> : null}

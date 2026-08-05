@@ -1,7 +1,9 @@
 import { CircleHelp, PanelRightClose, PanelRightOpen } from "lucide-react";
 import { useState, type ReactNode } from "react";
+import { useOnboardingTour } from "@/hooks/useOnboardingTour";
 import { cn } from "@/lib/cn";
 import { HelpDialog } from "../HelpDialog/HelpDialog";
+import { OnboardingTour } from "../OnboardingTour/OnboardingTour";
 import styles from "./AppShell.module.css";
 
 interface AppShellProps {
@@ -16,6 +18,7 @@ interface AppShellProps {
 export function AppShell({ left, right, defaultRightCollapsed = false, children }: AppShellProps) {
   const [rightCollapsed, setRightCollapsed] = useState(defaultRightCollapsed);
   const [helpOpen, setHelpOpen] = useState(false);
+  const tour = useOnboardingTour();
 
   return (
     <div className={styles.shell}>
@@ -28,13 +31,23 @@ export function AppShell({ left, right, defaultRightCollapsed = false, children 
             onClick={() => setHelpOpen(true)}
             aria-label="Help"
             title="Help"
+            data-tour="help-button"
           >
             <CircleHelp size={14} strokeWidth={1.75} />
           </button>
         </div>
         <div className={styles.main}>{children}</div>
       </div>
-      <HelpDialog open={helpOpen} onClose={() => setHelpOpen(false)} />
+      <HelpDialog open={helpOpen} onClose={() => setHelpOpen(false)} onStartTutorial={tour.startTutorial} />
+      <OnboardingTour
+        step={tour.step}
+        stepNumber={tour.stepNumber}
+        totalSteps={tour.totalSteps}
+        canGoBack={tour.canGoBack}
+        onNext={tour.next}
+        onBack={tour.back}
+        onSkip={tour.skip}
+      />
       {right && (
         <div className={cn(styles.right, rightCollapsed && styles.rightCollapsed)}>
           <button
@@ -42,6 +55,7 @@ export function AppShell({ left, right, defaultRightCollapsed = false, children 
             className={styles.rightToggle}
             onClick={() => setRightCollapsed((v) => !v)}
             aria-label={rightCollapsed ? "Expand panel" : "Collapse panel"}
+            data-tour="files-toggle"
           >
             {rightCollapsed ? (
               <PanelRightOpen size={14} strokeWidth={1.75} />
