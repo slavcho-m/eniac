@@ -45,4 +45,7 @@ export { PageHeader } from "./PageHeader/PageHeader";
 
 export { Dialog } from "./Dialog/Dialog";
 export { ConfirmDialog } from "./ConfirmDialog/ConfirmDialog";
+export { HelpDialog } from "./HelpDialog/HelpDialog";
+export { WorkspaceValidateButton } from "./WorkspaceValidation/WorkspaceValidateButton";
+export { WorkspaceValidationResult } from "./WorkspaceValidation/WorkspaceValidationResult";
 export { AssistantPicker } from "./AssistantPicker/AssistantPicker";

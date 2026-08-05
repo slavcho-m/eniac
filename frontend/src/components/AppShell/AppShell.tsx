@@ -1,6 +1,7 @@
-import { PanelRightClose, PanelRightOpen } from "lucide-react";
+import { CircleHelp, PanelRightClose, PanelRightOpen } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { cn } from "@/lib/cn";
+import { HelpDialog } from "../HelpDialog/HelpDialog";
 import styles from "./AppShell.module.css";
 
 interface AppShellProps {
@@ -14,11 +15,26 @@ interface AppShellProps {
 
 export function AppShell({ left, right, defaultRightCollapsed = false, children }: AppShellProps) {
   const [rightCollapsed, setRightCollapsed] = useState(defaultRightCollapsed);
+  const [helpOpen, setHelpOpen] = useState(false);
 
   return (
     <div className={styles.shell}>
       <div className={styles.left}>{left}</div>
-      <div className={styles.main}>{children}</div>
+      <div className={styles.mainOuter}>
+        <div className={styles.mainHeader}>
+          <button
+            type="button"
+            className={styles.helpButton}
+            onClick={() => setHelpOpen(true)}
+            aria-label="Help"
+            title="Help"
+          >
+            <CircleHelp size={14} strokeWidth={1.75} />
+          </button>
+        </div>
+        <div className={styles.main}>{children}</div>
+      </div>
+      <HelpDialog open={helpOpen} onClose={() => setHelpOpen(false)} />
       {right && (
         <div className={cn(styles.right, rightCollapsed && styles.rightCollapsed)}>
           <button

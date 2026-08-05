@@ -1,6 +1,18 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { AppShell, Button, Checkbox, Dialog, FormField, PageHeader, Textarea, TextInput } from "@/components";
+import {
+  AppShell,
+  Button,
+  Checkbox,
+  Dialog,
+  FormField,
+  PageHeader,
+  Textarea,
+  TextInput,
+  WorkspaceValidateButton,
+  WorkspaceValidationResult,
+} from "@/components";
+import { useWorkspaceValidation } from "@/hooks/useWorkspaceValidation";
 import { Sidebar } from "@/layout/Sidebar";
 import { ApiError, createProject, deleteProject } from "@/lib/api";
 
@@ -25,6 +37,7 @@ export function NewProjectPage() {
     null,
   );
   const [undoing, setUndoing] = useState(false);
+  const workspaceValidation = useWorkspaceValidation();
 
   const trimmedName = name.trim();
   const nameValid = trimmedName.length > 0 && NAME_PATTERN.test(trimmedName);
@@ -105,7 +118,24 @@ export function NewProjectPage() {
             value={workspacePath}
             onChange={(e) => setWorkspacePath(e.target.value)}
             disabled={greenfield}
+            trailingAdornment={
+              greenfield ? null : (
+                <WorkspaceValidateButton
+                  onClick={() => void workspaceValidation.validate(workspacePath.trim())}
+                  checking={workspaceValidation.checking}
+                  disabled={!workspacePath.trim()}
+                />
+              )
+            }
           />
+          {greenfield ? null : (
+            <WorkspaceValidationResult
+              result={workspaceValidation.result}
+              error={workspaceValidation.error}
+              initializing={workspaceValidation.initializing}
+              onInitGit={() => void workspaceValidation.initGit(workspacePath.trim())}
+            />
+          )}
         </FormField>
 
         <Checkbox

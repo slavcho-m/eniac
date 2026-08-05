@@ -218,4 +218,16 @@ export interface AmendmentProposal extends AmendmentBase {
   diff: string;
 }
 
+// Mirrors backend's _check_workspace (main.py) — shared by POST /workspace/validate and
+// POST /workspace/init-git, both of which return this same shape.
+export type WorkspaceStatus = "not_found" | "not_git" | "ok_repo" | "ok_orchestrator";
+
+export interface WorkspaceCheckResult {
+  status: WorkspaceStatus;
+  /** Only present for ok_orchestrator. */
+  repos?: string[];
+  /** Only present for ok_repo/ok_orchestrator when the root path itself is a git repo. */
+  dirty?: boolean;
+}
+
 export type TaskAmendment = AmendmentClarification | AmendmentProposal;

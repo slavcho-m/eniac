@@ -12,10 +12,15 @@ from typing import List, Literal, Optional, Set
 
 from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from . import db, runs
 from .agents import BACKENDS
+
+# backend/app/main.py -> backend/app -> backend -> repo root
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DOCS_ROOT = REPO_ROOT / "docs"
 
 app = FastAPI()
 app.add_middleware(
@@ -73,6 +78,10 @@ class ReviewArtifactBody(BaseModel):
 
 class ProjectUpdate(BaseModel):
     workspace_path: Optional[str] = None
+
+
+class WorkspacePathBody(BaseModel):
+    path: str
 
 
 class ApproveAssistantBody(BaseModel):
@@ -176,9 +185,7 @@ def _start_next_mastermind(task, task_id: str, masterminds: list, next_index: in
     prompt = context_md + prior_block
 
     project = db.get_project(project_id)
-    workspace_path = _effective_workspace_path(project, task)
-    if not workspace_path or not Path(workspace_path).expanduser().is_dir():
-        raise HTTPException(409, "workspace_path is missing or no longer exists")
+    workspace_path = _require_workspace_path(_effective_workspace_path(project, task))
 
     history_entry = {
         "mastermind": previous_mastermind,
@@ -222,6 +229,81 @@ def _revert_working_tree(workspace_path: str) -> None:
     subprocess.run(["git", "checkout", "--", "."], cwd=workspace_path, check=True)
 
 
+def _check_workspace(path: Optional[str]) -> dict:
+    """The one place that answers "is this path ready to work in" -- backs both the
+    frontend's explicit Validate action (`/workspace/validate`, on a raw not-yet-saved
+    path) and `_require_workspace_path` below (the runtime-guard refactor). Never raises;
+    every outcome including "doesn't exist" is a normal result, not an error."""
+    if not path or not Path(path).expanduser().is_dir():
+        return {"status": "not_found"}
+    resolved = str(Path(path).expanduser())
+    repos = runs.discover_repos(Path(resolved))
+    if repos and repos != ["."]:
+        result: dict = {"status": "ok_orchestrator", "repos": repos}
+        # An orchestrator root can itself also be a git repo (e.g. a deploy wrapper
+        # tracking its own Makefile/compose files) -- surface its dirty state too when so.
+        root_status = _git_status_porcelain(resolved)
+        if root_status is not None:
+            result["dirty"] = bool(root_status.strip())
+        return result
+    git_status = _git_status_porcelain(resolved)
+    if git_status is None:
+        return {"status": "not_git"}
+    return {"status": "ok_repo", "dirty": bool(git_status.strip())}
+
+
+def _require_workspace_path(path: Optional[str], require_git: bool = False) -> str:
+    """Refactor target for every runtime guard that used to duplicate its own
+    `if not workspace_path or not Path(...).is_dir(): raise HTTPException(...)` -- one
+    consistent status code (409) and message per failure kind, computed via the same
+    `_check_workspace` the Validate endpoint uses, so the two never drift."""
+    check = _check_workspace(path)
+    if check["status"] == "not_found":
+        raise HTTPException(409, "workspace_path is missing or no longer exists")
+    if require_git:
+        if check["status"] == "not_git":
+            raise HTTPException(409, "workspace_path is not a git repository")
+        if check.get("dirty"):
+            raise HTTPException(
+                409, "workspace_path has uncommitted changes; commit or stash before running an Assistant"
+            )
+    return str(Path(path).expanduser())  # type: ignore[arg-type]
+
+
+@app.post("/workspace/validate")
+def validate_workspace(body: WorkspacePathBody):
+    """Explicit pre-flight check the frontend's "Validate" action calls -- project-
+    independent (raw path in, no project needed) so it works both at project-creation
+    time and later from Project Settings. Never an error: "not initialized yet" is
+    information, not a failure."""
+    return _check_workspace(body.path)
+
+
+@app.post("/workspace/init-git")
+def init_workspace_git(body: WorkspacePathBody):
+    """Turns a plain (non-git, non-orchestrator) folder into a real git repo, offered by
+    the frontend right after a `not_git` Validate result instead of leaving the user to
+    hit a wall later. `git init` alone leaves HEAD unborn -- `runs.working_tree_diff`
+    defaults to diffing against literal "HEAD" when Patch mode has no checkpoint, which
+    doesn't resolve with zero commits, so the empty commit here is required, not
+    cosmetic. Never stages/commits any real file -- matches Eniac's own never-auto-commit
+    stance used everywhere else in this app."""
+    check = _check_workspace(body.path)
+    if check["status"] == "not_found":
+        raise HTTPException(400, "workspace_path is missing or no longer exists")
+    if check["status"] in ("ok_repo", "ok_orchestrator"):
+        raise HTTPException(400, f"workspace_path is already a valid {check['status'][3:]}")
+    resolved = str(Path(body.path).expanduser())
+    subprocess.run(["git", "init"], cwd=resolved, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "--allow-empty", "-m", "Initial commit (Eniac)"],
+        cwd=resolved,
+        check=True,
+        capture_output=True,
+    )
+    return _check_workspace(body.path)
+
+
 def _resolve_ppm_path(relative_path: str) -> Path:
     """Resolves a path relative to PPM_ROOT, rejecting anything that escapes it (including
     via `..` traversal) — the only path shape accepted from a client is relative, so an
@@ -247,6 +329,31 @@ def write_file(path: str, body: WriteFileBody):
         raise HTTPException(404, f"file '{path}' not found — can only edit files that already exist")
     resolved.write_text(body.content)
     return {"path": path, "written": True}
+
+
+@app.get("/docs/getting-started")
+def get_getting_started():
+    """Serves the repo's own docs/GETTING_STARTED.md (in-app Help), distinct from
+    `/files` above -- that one is scoped to PPM_ROOT (user project data), this is a
+    single static file that ships with the repo itself."""
+    resolved = DOCS_ROOT / "GETTING_STARTED.md"
+    if not resolved.is_file():
+        raise HTTPException(404, "GETTING_STARTED.md not found")
+    return {"content": resolved.read_text()}
+
+
+@app.get("/docs/images/{filename}")
+def get_docs_image(filename: str):
+    """Images referenced by GETTING_STARTED.md. Basename-only (no `/`) rules out `..`
+    traversal outright; resolve()+is_relative_to is the same belt-and-suspenders check
+    `_resolve_ppm_path` uses above."""
+    if "/" in filename or "\\" in filename:
+        raise HTTPException(400, "filename must not contain a path separator")
+    resolved = (DOCS_ROOT / "images" / filename).resolve()
+    images_dir = (DOCS_ROOT / "images").resolve()
+    if not resolved.is_relative_to(images_dir) or not resolved.is_file():
+        raise HTTPException(404, f"image '{filename}' not found")
+    return FileResponse(resolved)
 
 
 def create_ppm_skeleton(name: str, workspace_path: Optional[str], description: Optional[str] = None) -> None:
@@ -375,11 +482,7 @@ async def refresh_project_context(project_id: str):
     project = db.get_project(project_id)
     if project is None:
         raise HTTPException(404, f"project '{project_id}' not found")
-    workspace_path = project["workspace_path"]
-    if not workspace_path:
-        raise HTTPException(409, "project has no workspace_path set")
-    if not Path(workspace_path).expanduser().is_dir():
-        raise HTTPException(409, f"workspace_path '{workspace_path}' does not exist")
+    workspace_path = _require_workspace_path(project["workspace_path"])
 
     run_id = runs.new_run_id("project-context", project_id)
     _fire_and_forget(run_id, runs.start_context_refresh(run_id, project_id, workspace_path))
@@ -489,14 +592,9 @@ async def create_task(project_id: str, body: TaskCreateBody):
     # checked upfront here instead, same wording/status codes approve_assistant already
     # uses for the equivalent Ship-mode guards.
     if body.mode == "patch":
-        patch_workspace_path = _effective_workspace_path(project, {"repo_scope": body.repo_scope})
-        if not patch_workspace_path or not Path(patch_workspace_path).expanduser().is_dir():
-            raise HTTPException(400, "Patch mode requires a project workspace_path pointing to an existing directory")
-        patch_git_status = _git_status_porcelain(patch_workspace_path)
-        if patch_git_status is None:
-            raise HTTPException(400, "workspace_path is not a git repository")
-        if patch_git_status.strip():
-            raise HTTPException(409, "workspace_path has uncommitted changes; commit or stash before starting a Patch task")
+        _require_workspace_path(
+            _effective_workspace_path(project, {"repo_scope": body.repo_scope}), require_git=True
+        )
 
     image_paths_json = None
     if body.image_paths:
@@ -829,11 +927,7 @@ async def confirm_context(task_id: str):
         raise HTTPException(409, f"Mastermind '{first_mastermind}' is not yet configured")
 
     project = db.get_project(task["project_id"])
-    workspace_path = _effective_workspace_path(project, task)
-    if not workspace_path:
-        raise HTTPException(409, "project has no workspace_path set")
-    if not Path(workspace_path).expanduser().is_dir():
-        raise HTTPException(409, f"workspace_path '{workspace_path}' does not exist")
+    workspace_path = _require_workspace_path(_effective_workspace_path(project, task))
 
     confirmed_at = db.confirm_task_context(task_id)
 
@@ -878,9 +972,7 @@ async def approve_requirements(task_id: str):
         raise HTTPException(409, "requirements.md missing on disk")
 
     project = db.get_project(task["project_id"])
-    workspace_path = _effective_workspace_path(project, task)
-    if not workspace_path or not Path(workspace_path).expanduser().is_dir():
-        raise HTTPException(409, "workspace_path is missing or no longer exists")
+    workspace_path = _require_workspace_path(_effective_workspace_path(project, task))
 
     approved_at = db.approve_task_requirements(task_id)
 
@@ -949,9 +1041,7 @@ async def reject_patch(task_id: str, body: RejectAmendmentBody):
         raise HTTPException(400, "feedback is required when rejecting")
 
     project = db.get_project(task["project_id"])
-    workspace_path = _effective_workspace_path(project, task)
-    if not workspace_path or not Path(workspace_path).expanduser().is_dir():
-        raise HTTPException(409, "workspace_path is missing or no longer exists")
+    workspace_path = _require_workspace_path(_effective_workspace_path(project, task))
     _revert_working_tree(workspace_path)
 
     db.set_task_running(task_id)
@@ -1022,9 +1112,7 @@ async def reject_requirements(task_id: str, body: RejectAmendmentBody):
 
     first_mastermind = _current_mastermind(task)
     project = db.get_project(task["project_id"])
-    workspace_path = _effective_workspace_path(project, task)
-    if not workspace_path or not Path(workspace_path).expanduser().is_dir():
-        raise HTTPException(409, "workspace_path is missing or no longer exists")
+    workspace_path = _require_workspace_path(_effective_workspace_path(project, task))
 
     db.set_task_investigating(task_id)
 
@@ -1059,9 +1147,7 @@ async def reject_tasks(task_id: str, body: RejectAmendmentBody):
 
     first_mastermind = _current_mastermind(task)
     project = db.get_project(task["project_id"])
-    workspace_path = _effective_workspace_path(project, task)
-    if not workspace_path or not Path(workspace_path).expanduser().is_dir():
-        raise HTTPException(409, "workspace_path is missing or no longer exists")
+    workspace_path = _require_workspace_path(_effective_workspace_path(project, task))
 
     # Nothing has executed yet at this gate (approve-assistant requires
     # tasks_approved_at, which is never set before this point) -- every task_items
@@ -1123,9 +1209,7 @@ async def approve_assistant(task_id: str, body: Optional[ApproveAssistantBody] =
         db.set_task_item_assistant(task_id, item["item_id"], assistant)
 
     project = db.get_project(task["project_id"])
-    task_workspace_path = _effective_workspace_path(project, task)
-    if not task_workspace_path or not Path(task_workspace_path).expanduser().is_dir():
-        raise HTTPException(409, "workspace_path is missing or no longer exists")
+    task_workspace_path = _require_workspace_path(_effective_workspace_path(project, task))
 
     # An item's own `repo` further narrows the task-level path — "." (the ordinary case)
     # leaves it unchanged; a real value only ever appears on an orchestrator-root task,
@@ -1139,8 +1223,13 @@ async def approve_assistant(task_id: str, body: Optional[ApproveAssistantBody] =
     if not Path(workspace_path).expanduser().is_dir():
         raise HTTPException(409, f"repo '{item_repo}' no longer exists under workspace_path")
 
-    git_status = _git_status_porcelain(str(Path(workspace_path).expanduser()))
-    if git_status is None:
+    # Item-repo-scoped, not routed through _require_workspace_path(require_git=True): the
+    # dirty-tree check below is conditional on this specific repo's own prior progress within
+    # this task, a business rule _require_workspace_path has no notion of -- but the status
+    # classification and message wording still come from the same _check_workspace/messages
+    # every other guard uses, so the two can't drift.
+    item_repo_check = _check_workspace(workspace_path)
+    if item_repo_check["status"] == "not_git":
         raise HTTPException(409, "workspace_path is not a git repository")
     # Approving an item deliberately leaves its change as an uncommitted working-tree
     # edit (Eniac never auto-commits) — so only this item's repo's very first execution
@@ -1148,7 +1237,7 @@ async def approve_assistant(task_id: str, body: Optional[ApproveAssistantBody] =
     # legitimately run on top of its own prior approved-but-uncommitted progress. Scoped
     # per repo, not task-wide, since a multi-repo task's first item touching repos/b isn't
     # necessarily the task's first item overall.
-    if not db.any_task_item_started_for_repo(task_id, item_repo) and git_status.strip():
+    if not db.any_task_item_started_for_repo(task_id, item_repo) and item_repo_check.get("dirty"):
         raise HTTPException(409, "workspace_path has uncommitted changes; commit or stash before running an Assistant")
 
     requirements_path = (
@@ -1471,9 +1560,7 @@ async def consult_mastermind(task_id: str, body: ConsultMastermindBody):
 
     first_mastermind = _current_mastermind(task)
     project = db.get_project(task["project_id"])
-    workspace_path = _effective_workspace_path(project, task)
-    if not workspace_path or not Path(workspace_path).expanduser().is_dir():
-        raise HTTPException(409, "workspace_path is missing or no longer exists")
+    workspace_path = _require_workspace_path(_effective_workspace_path(project, task))
 
     run_id = runs.new_run_id("consultation", body.message)
     db.insert_run(run_id, task_id, "consultation")
@@ -1547,9 +1634,7 @@ def get_task_diff(task_id: str):
         return {"diff": ""}
 
     project = db.get_project(task["project_id"])
-    task_workspace_path = _effective_workspace_path(project, task)
-    if not task_workspace_path or not Path(task_workspace_path).expanduser().is_dir():
-        raise HTTPException(409, "workspace_path is missing or no longer exists")
+    task_workspace_path = _require_workspace_path(_effective_workspace_path(project, task))
 
     diffs = []
     for repo, baseline_commit in baselines_by_repo.items():

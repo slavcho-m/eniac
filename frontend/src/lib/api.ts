@@ -13,6 +13,7 @@ import type {
   TaskItem,
   TaskMode,
   TaskRun,
+  WorkspaceCheckResult,
 } from "@/types/api";
 
 const BASE_URL = import.meta.env.VITE_BACKEND_URL;
@@ -54,6 +55,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function getAgentAvailability(): Promise<Record<AgentBackend, boolean>> {
   return request("/agents/availability");
+}
+
+// --- Workspace ---
+// Project-independent — both work on a raw path, so they're usable before a project
+// exists (NewProjectPage) as well as when editing one (ProjectSettingsDialog).
+
+export function validateWorkspace(path: string): Promise<WorkspaceCheckResult> {
+  return request("/workspace/validate", { method: "POST", body: JSON.stringify({ path }) });
+}
+
+export function initWorkspaceGit(path: string): Promise<WorkspaceCheckResult> {
+  return request("/workspace/init-git", { method: "POST", body: JSON.stringify({ path }) });
 }
 
 // --- Projects ---
@@ -306,6 +319,17 @@ export function writeFile(path: string, content: string): Promise<{ path: string
     method: "PUT",
     body: JSON.stringify({ content }),
   });
+}
+
+export function getGettingStarted(): Promise<{ content: string }> {
+  return request("/docs/getting-started");
+}
+
+/** Absolute (cross-origin, backend-hosted) URL for an image referenced by
+ * GETTING_STARTED.md -- used to rewrite the doc's repo-relative `images/foo.jpg` srcs,
+ * which otherwise resolve against the frontend's own origin/route, not the backend. */
+export function docsImageUrl(filename: string): string {
+  return `${BASE_URL}/docs/images/${encodeURIComponent(filename)}`;
 }
 
 // --- Agent config ---

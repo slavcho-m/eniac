@@ -30,4 +30,7 @@
 .adornment {
   display: flex;
   align-items: center;
+  align-self: stretch;
+  padding-left: 10px;
+  border-left: 1px solid var(--border-hairline);
 }

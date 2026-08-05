@@ -1,5 +1,14 @@
 import { useEffect, useState } from "react";
-import { Button, Dialog, FormField, SectionLabel, TextInput } from "@/components";
+import {
+  Button,
+  Dialog,
+  FormField,
+  SectionLabel,
+  TextInput,
+  WorkspaceValidateButton,
+  WorkspaceValidationResult,
+} from "@/components";
+import { useWorkspaceValidation } from "@/hooks/useWorkspaceValidation";
 import { ApiError, updateProject } from "@/lib/api";
 import type { Project } from "@/types/api";
 
@@ -21,12 +30,17 @@ export function ProjectSettingsDialog({
   const [workspacePath, setWorkspacePath] = useState(project.workspace_path ?? "");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const workspaceValidation = useWorkspaceValidation();
 
   useEffect(() => {
     if (open) {
       setWorkspacePath(project.workspace_path ?? "");
       setError(null);
+      workspaceValidation.reset();
     }
+    // workspaceValidation.reset is a fresh function identity each render, not a stable
+    // dependency -- only re-run on open/path.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, project.workspace_path]);
 
   async function handleSave() {
@@ -67,6 +81,19 @@ export function ProjectSettingsDialog({
           placeholder="~/dev/payments-gateway"
           value={workspacePath}
           onChange={(e) => setWorkspacePath(e.target.value)}
+          trailingAdornment={
+            <WorkspaceValidateButton
+              onClick={() => void workspaceValidation.validate(workspacePath.trim())}
+              checking={workspaceValidation.checking}
+              disabled={!workspacePath.trim()}
+            />
+          }
+        />
+        <WorkspaceValidationResult
+          result={workspaceValidation.result}
+          error={workspaceValidation.error}
+          initializing={workspaceValidation.initializing}
+          onInitGit={() => void workspaceValidation.initGit(workspacePath.trim())}
         />
       </FormField>
       {error ? (

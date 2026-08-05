@@ -94,9 +94,13 @@ export function Sidebar({ refreshKey }: SidebarProps) {
   }
 
   const currentProject = projects?.find((p) => p.id === projectId);
+  // Backend returns tasks oldest-first (ORDER BY created_at); reverse once here so every
+  // group below — and the plain top-to-bottom render order — puts the most recent task
+  // first, without each grouping function needing to know about sort order itself.
+  const orderedTasks = [...(tasks ?? [])].reverse();
   const taskGroups = currentProject?.is_orchestrator
-    ? groupTasksByNode(tasks ?? [], currentProject.repos)
-    : groupTasksByDate(tasks ?? []);
+    ? groupTasksByNode(orderedTasks, currentProject.repos)
+    : groupTasksByDate(orderedTasks);
 
   function renderTaskItem(task: Task) {
     const mode = TASK_MODES[task.mode];
@@ -240,7 +244,7 @@ export function Sidebar({ refreshKey }: SidebarProps) {
             taskGroups.map((group, i) => (
               <div key={group.label} style={{ marginTop: i > 0 ? 20 : 0 }}>
                 <SectionLabel>{group.label}</SectionLabel>
-                <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 2 }}>
+                <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 4 }}>
                   {group.tasks.map(renderTaskItem)}
                 </div>
               </div>
@@ -256,6 +260,9 @@ export function Sidebar({ refreshKey }: SidebarProps) {
             flexShrink: 0,
             borderTop: "1px solid var(--border-hairline)",
             paddingTop: 16,
+            display: "flex",
+            flexDirection: "column",
+            gap: 8,
           }}
         >
           <Button

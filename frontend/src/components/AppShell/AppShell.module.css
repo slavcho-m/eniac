@@ -14,9 +14,43 @@
   padding: 28px 16px;
 }
 
-.main {
+.mainOuter {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.mainHeader {
+  flex-shrink: 0;
+  display: flex;
+  justify-content: flex-end;
+  padding: 14px 20px 0;
+}
+
+.helpButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 1px solid var(--border-hairline);
+  background: none;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+
+.helpButton:hover {
+  color: var(--text-primary);
+  background: var(--neutral-bg);
+}
+
+.main {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 28px 32px;
 }
