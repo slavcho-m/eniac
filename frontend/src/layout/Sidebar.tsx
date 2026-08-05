@@ -184,6 +184,7 @@ export function Sidebar({ refreshKey }: SidebarProps) {
                   type="button"
                   className={styles.menuOption}
                   role="menuitem"
+                  data-tour="project-menu-new-project"
                   onClick={() => {
                     setProjectMenuOpen(false);
                     void navigate("/new-project");
@@ -196,6 +197,7 @@ export function Sidebar({ refreshKey }: SidebarProps) {
                   type="button"
                   className={styles.menuOption}
                   role="menuitem"
+                  data-tour="project-menu-view-all"
                   onClick={() => {
                     setProjectMenuOpen(false);
                     void navigate("/");
@@ -272,6 +274,7 @@ export function Sidebar({ refreshKey }: SidebarProps) {
             icon={<ListPlus size={14} strokeWidth={1.75} />}
             onClick={() => navigate(`/projects/${projectId}`)}
             style={{ width: "100%" }}
+            data-tour="new-task-button"
           >
             New Task
           </Button>

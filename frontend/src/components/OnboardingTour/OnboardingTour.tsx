@@ -1,12 +1,11 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { docsImageUrl } from "@/lib/api";
-import { cn } from "@/lib/cn";
-import type { OnboardingStep } from "@/lib/onboarding";
+import type { MouseEvent } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
+import type { ResolvedOnboardingStep } from "@/lib/onboarding";
 import { Button } from "../Button/Button";
 import styles from "./OnboardingTour.module.css";
 
 interface OnboardingTourProps {
-  step: OnboardingStep | null;
+  step: ResolvedOnboardingStep | null;
   stepNumber: number;
   totalSteps: number;
   canGoBack: boolean;
@@ -22,28 +21,54 @@ interface OnboardingTourProps {
 function useTargetRect(selector: string | null): DOMRect | null {
   const [rect, setRect] = useState<DOMRect | null>(null);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!selector) {
       setRect(null);
       return undefined;
     }
+    // Synchronous first check, before paint -- by the time a layout effect runs, a
+    // route change from the same click that changed `selector` has already committed
+    // its new DOM (React batches the navigate() + step-index update from a single
+    // click into one commit), so the new target usually already exists right now. Doing
+    // this via the rAF loop below instead (a real fix tried first) means the very first
+    // frame always renders with rect still null -- a full re-render showing the card at
+    // its centered fallback before snapping to the real spot, i.e. exactly the "briefly
+    // teleports to the middle on every Next" regression that fix introduced. Checking
+    // synchronously here, before the browser ever paints the null state, skips that
+    // frame entirely for every transition where the target is already there.
+    const initial = document.querySelector(selector);
+    setRect(initial ? initial.getBoundingClientRect() : null);
+
     let frame: number;
     function measure() {
       const el = selector ? document.querySelector(selector) : null;
-      setRect((prev) => {
-        if (!el) return null;
-        const next = el.getBoundingClientRect();
-        if (
-          prev &&
-          prev.top === next.top &&
-          prev.left === next.left &&
-          prev.width === next.width &&
-          prev.height === next.height
-        ) {
-          return prev;
-        }
-        return next;
-      });
+      // Sticky once found: a target that legitimately disappears mid-step (e.g. a real
+      // dropdown this step spotlights closing as a side effect of the very click meant
+      // to advance past it -- Sidebar's own outside-click-closes-menu listener fires on
+      // `mousedown`, before the `click` this component's Next button is waiting for)
+      // must NOT reset the card to its centered default here. Real bug this caused: the
+      // card visibly re-centering *between* mousedown and mouseup made the browser see
+      // mismatched click targets, so `click` never fired at all -- Next silently did
+      // nothing, over and over, indistinguishable from "stuck on the same step." This
+      // loop only ever *adds* a rect once one's found (or updates it on real movement)
+      // -- never resets to null -- so a target that hasn't mounted yet (a genuine page
+      // navigation, e.g. into the New Project form) still gets picked up once it does,
+      // without that same reset-to-centered flash recurring every frame while waiting.
+      if (el) {
+        setRect((prev) => {
+          const next = el.getBoundingClientRect();
+          if (
+            prev &&
+            prev.top === next.top &&
+            prev.left === next.left &&
+            prev.width === next.width &&
+            prev.height === next.height
+          ) {
+            return prev;
+          }
+          return next;
+        });
+      }
       frame = requestAnimationFrame(measure);
     }
     frame = requestAnimationFrame(measure);
@@ -58,6 +83,20 @@ const VIEWPORT_MARGIN = 16;
 const GAP = 12;
 const DEFAULT_CARD_SIZE = { width: 320, height: 180 };
 
+// Blocking elements (bands, centerBlocker, the plain full-viewport blocker) visually
+// cover the real page and catch `click` via pointer-events, but `mousedown` still
+// bubbles past them to `document` regardless -- real bug this caused: clicking a
+// blocked area over the real "New Project"/"View All Projects" dropdown never fired
+// its onClick (correctly denied), but Sidebar's own outside-click-closes-menu listener
+// (a raw `document`-level mousedown listener) still saw the mousedown, decided it was
+// "outside" the menu (its target is this blocker div, not a descendant of the menu),
+// and closed the real dropdown anyway -- a page-level side effect leaking through a
+// click the tour was supposed to be fully denying. Stopping propagation here makes a
+// "blocked" step truly inert to the rest of the page, not just visually blocked.
+function stopMouseDown(e: MouseEvent) {
+  e.stopPropagation();
+}
+
 export function OnboardingTour({
   step,
   stepNumber,
@@ -68,6 +107,11 @@ export function OnboardingTour({
   onSkip,
 }: OnboardingTourProps) {
   const rect = useTargetRect(step?.target ?? null);
+  // Usually the same selector as the target (resolveStep defaults it that way), so this
+  // is a redundant second poll for most steps -- only steps that set `avoid` explicitly
+  // (a row inside a still-open real dropdown) get a genuinely different rect back. See
+  // the `obstacle` block below for why placement needs this distinct from `spotlight`.
+  const avoidRect = useTargetRect(step?.avoid ?? null);
   const cardRef = useRef<HTMLDivElement>(null);
   const [cardSize, setCardSize] = useState(DEFAULT_CARD_SIZE);
 
@@ -102,24 +146,70 @@ export function OnboardingTour({
       : null;
   const allowInteraction = Boolean(step.allowInteraction && spotlight);
 
+  // What the card's placement has to dodge -- usually the same rect as the visual
+  // spotlight cutout above, except for steps that spotlight one row inside a still-open
+  // real dropdown (avoidRect, from the step's `avoid` selector). That dropdown renders
+  // above this whole overlay (see .root's z-index) so a real click can reach it, which
+  // means the rest of it stays fully visible no matter how narrow the spotlighted row
+  // is -- placing the card by the row's rect alone lands it right on top of the
+  // dropdown's other, still-visible rows.
+  const obstacle = step.avoid && avoidRect
+    ? {
+        top: avoidRect.top - SPOTLIGHT_PADDING,
+        left: avoidRect.left - SPOTLIGHT_PADDING,
+        width: avoidRect.width + SPOTLIGHT_PADDING * 2,
+        height: avoidRect.height + SPOTLIGHT_PADDING * 2,
+      }
+    : spotlight;
+
   let cardStyle: { position: "fixed"; transform: string; top: number; left: number } | undefined;
-  if (spotlight) {
-    const spaceBelow = window.innerHeight - (spotlight.top + spotlight.height);
-    const spaceAbove = spotlight.top;
-    // Prefer below (matches reading order); flip above only when there's genuinely more
-    // room there, so the card never has to fight the target for the same few pixels.
-    const placeBelow = spaceBelow >= cardSize.height + GAP || spaceBelow >= spaceAbove;
-    const top = placeBelow
-      ? Math.min(spotlight.top + spotlight.height + GAP, window.innerHeight - cardSize.height - VIEWPORT_MARGIN)
-      : Math.max(spotlight.top - cardSize.height - GAP, VIEWPORT_MARGIN);
+  if (obstacle) {
+    // Four candidate placements, not just below/above -- a step that spotlights an
+    // entire column (the whole sidebar, the whole main content area) leaves almost no
+    // room above or below it no matter how tall the card is, so a below/above-only rule
+    // pins the card into a sliver of space and it ends up overlapping the very thing
+    // it's explaining. Reading-order preference (below, right, above, left) among
+    // whichever sides actually fit; if none do (spotlight fills the viewport on both
+    // axes), falls back to whichever side has the most room rather than defaulting to
+    // "below" and guaranteeing an overlap.
+    const candidates = [
+      {
+        space: window.innerHeight - (obstacle.top + obstacle.height),
+        top: obstacle.top + obstacle.height + GAP,
+        left: obstacle.left,
+        fits: (space: number) => space >= cardSize.height + GAP,
+      },
+      {
+        space: window.innerWidth - (obstacle.left + obstacle.width),
+        top: obstacle.top,
+        left: obstacle.left + obstacle.width + GAP,
+        fits: (space: number) => space >= cardSize.width + GAP,
+      },
+      {
+        space: obstacle.top,
+        top: obstacle.top - cardSize.height - GAP,
+        left: obstacle.left,
+        fits: (space: number) => space >= cardSize.height + GAP,
+      },
+      {
+        space: obstacle.left,
+        top: obstacle.top,
+        left: obstacle.left - cardSize.width - GAP,
+        fits: (space: number) => space >= cardSize.width + GAP,
+      },
+    ];
+    const chosen =
+      candidates.find((c) => c.fits(c.space)) ??
+      candidates.reduce((best, c) => (c.space > best.space ? c : best));
+
     cardStyle = {
       position: "fixed",
       // .card's CSS class centers by default via `transform: translate(-50%, -50%)`
       // treating top/left as the *center* point -- reset here since these top/left
       // values are the card's actual top-left corner instead.
       transform: "none",
-      top,
-      left: Math.min(Math.max(spotlight.left, VIEWPORT_MARGIN), window.innerWidth - cardSize.width - VIEWPORT_MARGIN),
+      top: Math.min(Math.max(chosen.top, VIEWPORT_MARGIN), window.innerHeight - cardSize.height - VIEWPORT_MARGIN),
+      left: Math.min(Math.max(chosen.left, VIEWPORT_MARGIN), window.innerWidth - cardSize.width - VIEWPORT_MARGIN),
     };
   }
 
@@ -131,7 +221,12 @@ export function OnboardingTour({
           style={{ top: spotlight.top, left: spotlight.left, width: spotlight.width, height: spotlight.height }}
         />
       ) : (
-        <div className={styles.fullDim} style={step.allowInteraction ? { pointerEvents: "none" } : undefined} />
+        <div
+          className={styles.fullDim}
+          style={step.allowInteraction ? { pointerEvents: "none" } : undefined}
+          onMouseDown={stopMouseDown}
+          role="presentation"
+        />
       )}
 
       {spotlight ? (
@@ -139,14 +234,23 @@ export function OnboardingTour({
           {/* Bands only cover the 4 regions *around* the spotlighted rect -- unlike a
            * single full-viewport blocker, they never repaint over the hole the spotlight
            * div above just cut, in either interaction mode. */}
-          <div className={styles.blockerBand} style={{ top: 0, left: 0, right: 0, height: spotlight.top }} />
+          <div
+            className={styles.blockerBand}
+            style={{ top: 0, left: 0, right: 0, height: spotlight.top }}
+            onMouseDown={stopMouseDown}
+            role="presentation"
+          />
           <div
             className={styles.blockerBand}
             style={{ top: spotlight.top + spotlight.height, left: 0, right: 0, bottom: 0 }}
+            onMouseDown={stopMouseDown}
+            role="presentation"
           />
           <div
             className={styles.blockerBand}
             style={{ top: spotlight.top, left: 0, width: spotlight.left, height: spotlight.height }}
+            onMouseDown={stopMouseDown}
+            role="presentation"
           />
           <div
             className={styles.blockerBand}
@@ -156,6 +260,8 @@ export function OnboardingTour({
               right: 0,
               height: spotlight.height,
             }}
+            onMouseDown={stopMouseDown}
+            role="presentation"
           />
           {/* Invisible click-catcher exactly over the hole -- present for every ordinary
            * step (blocks a real click reaching the spotlighted element) and omitted only
@@ -164,34 +270,35 @@ export function OnboardingTour({
             <div
               className={styles.centerBlocker}
               style={{ top: spotlight.top, left: spotlight.left, width: spotlight.width, height: spotlight.height }}
+              onMouseDown={stopMouseDown}
+              role="presentation"
             />
           )}
         </>
       ) : (
-        <div className={styles.blocker} style={step.allowInteraction ? { pointerEvents: "none" } : undefined} />
+        <div
+          className={styles.blocker}
+          style={step.allowInteraction ? { pointerEvents: "none" } : undefined}
+          onMouseDown={stopMouseDown}
+          role="presentation"
+        />
       )}
 
-      <div ref={cardRef} className={cn(styles.card, step.images && styles.cardWide)} style={cardStyle}>
+      {/* Same reasoning as stopMouseDown on the blockers above -- without this, clicking
+       * Next/Back/Skip while a step is narrating a real open dropdown (the project menu,
+       * the mode menu) sends a mousedown that bubbles to `document`, and that dropdown's
+       * own outside-click-closes-menu listener reads "click landed on the tour card" as
+       * "click landed outside the menu" and closes it -- right before the very next step
+       * tries to spotlight an option inside it. The div itself isn't the interactive
+       * control -- its real heading/buttons are -- this handler only stops a native
+       * event from bubbling past it, hence the disable. */}
+      {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions */}
+      <div ref={cardRef} className={styles.card} style={cardStyle} onMouseDown={stopMouseDown}>
         <p className={styles.progress}>
           {stepNumber} / {totalSteps}
         </p>
         <h3 className={styles.title}>{step.title}</h3>
         <p className={styles.body}>{step.body}</p>
-        {step.images ? (
-          <div className={styles.images}>
-            {step.images.map((image) => (
-              <figure key={image.src + image.caption} className={styles.figure}>
-                <img
-                  src={docsImageUrl(image.src.replace(/^images\//, ""))}
-                  alt={image.caption}
-                  className={styles.image}
-                />
-                <figcaption className={styles.caption}>{image.caption}</figcaption>
-              </figure>
-            ))}
-          </div>
-        ) : null}
-        {step.hint ? <p className={styles.hint}>{step.hint}</p> : null}
         <div className={styles.actions}>
           <button type="button" className={styles.skip} onClick={onSkip}>
             Skip tour

@@ -76,6 +76,7 @@ export function ModeSelect({ value, onChange, disabled, title }: ModeSelectProps
               className={styles.menu}
               role="menu"
               style={{ bottom: position.bottom, left: position.left }}
+              data-tour="mode-select-menu"
             >
               {Object.values(TASK_MODES).map((mode) => (
                 <button
@@ -85,6 +86,7 @@ export function ModeSelect({ value, onChange, disabled, title }: ModeSelectProps
                   role="menuitem"
                   aria-label={mode.label}
                   disabled={mode.disabled}
+                  data-tour={`mode-option-${mode.value}`}
                   onClick={() => {
                     onChange(mode.value);
                     setOpen(false);

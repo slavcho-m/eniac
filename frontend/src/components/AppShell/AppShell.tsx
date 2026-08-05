@@ -1,9 +1,8 @@
 import { CircleHelp, PanelRightClose, PanelRightOpen } from "lucide-react";
 import { useState, type ReactNode } from "react";
-import { useOnboardingTour } from "@/hooks/useOnboardingTour";
+import { useOnboardingTourContext } from "@/hooks/useOnboardingTourContext";
 import { cn } from "@/lib/cn";
 import { HelpDialog } from "../HelpDialog/HelpDialog";
-import { OnboardingTour } from "../OnboardingTour/OnboardingTour";
 import styles from "./AppShell.module.css";
 
 interface AppShellProps {
@@ -18,11 +17,13 @@ interface AppShellProps {
 export function AppShell({ left, right, defaultRightCollapsed = false, children }: AppShellProps) {
   const [rightCollapsed, setRightCollapsed] = useState(defaultRightCollapsed);
   const [helpOpen, setHelpOpen] = useState(false);
-  const tour = useOnboardingTour();
+  const tour = useOnboardingTourContext();
 
   return (
     <div className={styles.shell}>
-      <div className={styles.left}>{left}</div>
+      <div className={styles.left} data-tour="left-nav">
+        {left}
+      </div>
       <div className={styles.mainOuter}>
         <div className={styles.mainHeader}>
           <button
@@ -36,18 +37,11 @@ export function AppShell({ left, right, defaultRightCollapsed = false, children 
             <CircleHelp size={14} strokeWidth={1.75} />
           </button>
         </div>
-        <div className={styles.main}>{children}</div>
+        <div className={styles.main} data-tour="main-content">
+          {children}
+        </div>
       </div>
       <HelpDialog open={helpOpen} onClose={() => setHelpOpen(false)} onStartTutorial={tour.startTutorial} />
-      <OnboardingTour
-        step={tour.step}
-        stepNumber={tour.stepNumber}
-        totalSteps={tour.totalSteps}
-        canGoBack={tour.canGoBack}
-        onNext={tour.next}
-        onBack={tour.back}
-        onSkip={tour.skip}
-      />
       {right && (
         <div className={cn(styles.right, rightCollapsed && styles.rightCollapsed)}>
           <button

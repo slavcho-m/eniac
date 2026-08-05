@@ -1,36 +1,69 @@
-export type OnboardingPhase = "home" | "new-project-form" | "project" | "concepts";
+export type OnboardingPhase = "home" | "new-project" | "project";
+
+/** Facts about the workspace that change a step's copy or behavior -- currently just
+ * whether any project exists yet, which affects step 2's wording and step 14's
+ * checkpoint (see resolveStep). */
+export interface OnboardingContext {
+  hasProjects: boolean;
+}
 
 export interface OnboardingStep {
   id: string;
   phase: OnboardingPhase;
   /** CSS selector for the real element to spotlight; null renders a plain centered card
-   * with no cutout (welcome/concepts slides). */
+   * with no cutout (welcome/done slides). */
+  target: string | null;
+  title: string;
+  body: string | ((ctx: OnboardingContext) => string);
+  /** Lets a real click on the spotlighted target reach the app underneath instead of
+   * being blocked -- every non-interactive step blocks clicks so the user can't wander
+   * off mid-explanation, but a handful of steps (opening a real dropdown, navigating to
+   * the New Project form, the create-your-first-project checkpoint) are genuinely meant
+   * to be used while they're being explained. */
+  allowInteraction?: boolean | ((ctx: OnboardingContext) => boolean);
+  /** Hides the Next button -- only for the checkpoint step when there's truly nothing to
+   * skip ahead to yet (no project exists, so there's no project screen to jump to until
+   * the user creates one for real). */
+  hideNext?: boolean | ((ctx: OnboardingContext) => boolean);
+  /** Once an element matching this selector appears in the DOM, auto-advance to the next
+   * step -- e.g. once a real dropdown this step points at actually opens, whether from a
+   * genuine click or the Next-button bypass clicking it on the user's behalf (see
+   * useOnboardingTour's advance()). Polled the same way OnboardingTour's own
+   * useTargetRect polls for a step's own target. */
+  advanceWhenSelectorPresent?: string;
+  /** The real region the card must not overlap when placing itself -- defaults to
+   * `target` and only needs setting when they differ. A handful of steps spotlight one
+   * row inside a still-open real dropdown (e.g. "New Project" inside the project menu):
+   * that dropdown renders above the tour overlay so a real click can reach it, which
+   * means the *whole* menu stays visible regardless of which row is spotlighted -- if
+   * the card only dodges the narrow spotlighted row, it lands right on top of the
+   * dropdown's other, still-visible rows. */
+  avoid?: string;
+}
+
+export interface ResolvedOnboardingStep {
+  id: string;
+  phase: OnboardingPhase;
   target: string | null;
   title: string;
   body: string;
-  /** Repo-relative docs/images paths, same convention GETTING_STARTED.md's own markdown
-   * images use. A caption pairs each with a short label (e.g. "Single-repo" /
-   * "Orchestrator") -- plain `image` alone doesn't cover the concepts step, which needs
-   * to show two project shapes side by side, not just illustrate one thing. */
-  images?: { src: string; caption: string }[];
-  /** Lets a real click on the spotlighted target reach the app underneath instead of
-   * being blocked -- every non-interactive step blocks clicks so the user can't wander
-   * off mid-explanation, but a handful of steps (the workspace menu, the New Project
-   * form) are genuinely meant to be used while they're being explained. Independent of
-   * whether Next is shown -- see hideNext. */
-  allowInteraction?: boolean;
-  /** Hides the Next button entirely -- only for a true dead end (waiting on the user to
-   * go create their first project). Every other interactive step still shows Next as an
-   * explicit bypass, so engaging with the real UI is an option, not a requirement. */
-  hideNext?: boolean;
-  /** Short emphasized line inviting a real click, shown above Next/Skip -- only set on
-   * steps where allowInteraction actually leads somewhere (opens a menu, reveals a
-   * follow-up step). */
-  hint?: string;
-  /** Once an element matching this selector appears in the DOM, auto-advance to the next
-   * step -- e.g. once the real dropdown this step points at actually opens. Polled the
-   * same way useTargetRect already polls for a step's own target. */
-  advanceWhenSelectorPresent?: string;
+  allowInteraction: boolean;
+  hideNext: boolean;
+  avoid: string | null;
+}
+
+export function resolveStep(step: OnboardingStep, ctx: OnboardingContext): ResolvedOnboardingStep {
+  return {
+    id: step.id,
+    phase: step.phase,
+    target: step.target,
+    title: step.title,
+    body: typeof step.body === "function" ? step.body(ctx) : step.body,
+    allowInteraction:
+      typeof step.allowInteraction === "function" ? step.allowInteraction(ctx) : Boolean(step.allowInteraction),
+    hideNext: typeof step.hideNext === "function" ? step.hideNext(ctx) : Boolean(step.hideNext),
+    avoid: step.avoid ?? step.target,
+  };
 }
 
 export const ONBOARDING_STEPS: OnboardingStep[] = [
@@ -42,39 +75,21 @@ export const ONBOARDING_STEPS: OnboardingStep[] = [
     body: "A quick look at how the workspace fits together -- takes under a minute.",
   },
   {
-    id: "project-menu",
+    id: "home-projects",
     phase: "home",
-    target: '[data-tour="project-menu-trigger"]',
+    target: '[data-tour="main-content"]',
     title: "Your projects",
-    body: "Create a new project or jump to any existing one from here.",
-    allowInteraction: true,
-    hint: "Click it to open the menu, or Next to keep going.",
-    advanceWhenSelectorPresent: '[data-tour="project-menu-list"]',
+    body: (ctx) =>
+      ctx.hasProjects
+        ? "This is where all of your projects are listed."
+        : "Future projects you create will be listed here.",
   },
   {
-    id: "project-menu-open",
+    id: "left-nav",
     phase: "home",
-    target: '[data-tour="project-menu-list"]',
-    title: "New Project / View All Projects",
-    body: "“New Project” walks through setting one up. “View All Projects” lists everything you've got.",
-    allowInteraction: true,
-    hint: "Click “New Project” to see the form, or Next to keep going.",
-  },
-  {
-    id: "new-project-name",
-    phase: "new-project-form",
-    target: '[data-tour="new-project-fields"]',
-    title: "Name it and point at your code",
-    body: "Pick a project name and, optionally, the folder where your code lives -- you can always add a workspace path later for a greenfield project.",
-    allowInteraction: true,
-  },
-  {
-    id: "new-project-create",
-    phase: "new-project-form",
-    target: '[data-tour="new-project-create"]',
-    title: "Create it",
-    body: "That sets up this project's own memory. Fill it in and create it now, or Next to keep exploring first.",
-    allowInteraction: true,
+    target: '[data-tour="left-nav"]',
+    title: "Primary navigation",
+    body: "This column is where you'll spend most of your time -- see a project's current and future tasks, start new ones, create new projects, or jump back to the home page.",
   },
   {
     id: "help-icon",
@@ -84,44 +99,112 @@ export const ONBOARDING_STEPS: OnboardingStep[] = [
     body: "The getting-started guide and this tour are always one click away.",
   },
   {
-    id: "no-projects-yet",
+    id: "project-menu-trigger",
     phase: "home",
-    target: null,
-    title: "Ready when you are",
-    body: "Create your first project from the workspace menu up top whenever you like -- this tour will pick back up the moment you do.",
-    hideNext: true,
-    // No spotlight to protect here, but the intent is the opposite of every other
-    // hideNext-less step: get out of the way and let the user go use the real menu
-    // right now, not block the page until they hit Skip.
+    target: '[data-tour="project-menu-trigger"]',
+    title: "Switch projects",
+    body: "This is the project navigator. Click it to open the menu, or Next to keep going.",
+    allowInteraction: true,
+    advanceWhenSelectorPresent: '[data-tour="project-menu-list"]',
+  },
+  {
+    id: "project-menu-list",
+    phase: "home",
+    target: '[data-tour="project-menu-list"]',
+    title: "Two options",
+    body: "New Project starts the setup form. View All Projects opens the home page you just saw, listing everything in your workspace.",
+  },
+  {
+    id: "project-menu-view-all",
+    phase: "home",
+    target: '[data-tour="project-menu-view-all"]',
+    avoid: '[data-tour="project-menu-list"]',
+    title: "View All Projects",
+    body: "Click this and the home page opens, listing every project in your workspace.",
+  },
+  {
+    id: "project-menu-new-project",
+    phase: "home",
+    target: '[data-tour="project-menu-new-project"]',
+    avoid: '[data-tour="project-menu-list"]',
+    title: "New Project",
+    body: "Click this to open the form for creating a new project.",
     allowInteraction: true,
   },
   {
-    id: "composer",
-    phase: "project",
-    target: '[data-tour="prompt-input"]',
-    title: "Describe what you want",
-    body: "Write a task in plain language -- this is the one thing you write from scratch; everything after is agent-authored and yours to review.",
+    id: "new-project-form",
+    phase: "new-project",
+    target: '[data-tour="new-project-form"]',
+    title: "Set up a project",
+    body: "Fill in this form to set up a project. \"Creating a project\" here just means connecting Eniac to a real codebase -- or to a folder where one will exist once you start building.",
   },
   {
-    id: "mode-select",
-    phase: "project",
-    target: '[data-tour="mode-select"]',
-    title: "Ship, Patch, or Discuss",
-    body: "Ship runs the full pipeline for real features. Patch is a fast single-shot fix. Discuss is just a conversation, no code changes.",
+    id: "project-name-field",
+    phase: "new-project",
+    target: '[data-tour="project-name-field"]',
+    title: "Project name",
+    body: "Pick a short, lowercase name -- this becomes the project's folder name in Per-Project Memory.",
   },
   {
-    id: "agent-select",
-    phase: "project",
-    target: '[data-tour="agent-select"]',
-    title: "Choose your agent",
-    body: "Run tasks on Claude or Codex -- whichever CLI you have authenticated.",
+    id: "project-description-field",
+    phase: "new-project",
+    target: '[data-tour="project-description-field"]',
+    title: "Description",
+    body: "Optional -- a short note on what this project is, for your own reference later.",
   },
   {
-    id: "files-toggle",
+    id: "workspace-path-field",
+    phase: "new-project",
+    target: '[data-tour="workspace-path-field"]',
+    title: "Workspace path",
+    body: "Point this at the folder where your code lives. Once you've entered a path, click Verify to check it's valid before creating the project.",
+  },
+  {
+    id: "greenfield-checkbox",
+    phase: "new-project",
+    target: '[data-tour="greenfield-checkbox"]',
+    title: "Greenfield projects",
+    body: "No code yet? Check this box. A greenfield project skips the workspace path for now -- add one later from project settings once there's something to point at.",
+  },
+  {
+    id: "new-project-recap",
+    phase: "new-project",
+    target: '[data-tour="new-project-form"]',
+    title: "Ready to go",
+    body: (ctx) =>
+      ctx.hasProjects
+        ? "That's the form. We'll continue on to the project screen now."
+        : "Fill in the form and create your project whenever you're ready -- this tour will pick back up on the project screen the moment it's created.",
+    allowInteraction: (ctx) => !ctx.hasProjects,
+    hideNext: (ctx) => !ctx.hasProjects,
+  },
+  {
+    id: "project-left-nav-updated",
     phase: "project",
-    target: '[data-tour="files-toggle"]',
-    title: "Project files",
-    body: "Generated requirements, tasks, and context files for this project live in this panel.",
+    target: '[data-tour="left-nav"]',
+    title: "Your project, in the nav",
+    body: "The left navigation now shows this project's own tasks, and updates as you create more.",
+  },
+  {
+    id: "project-header",
+    phase: "project",
+    target: '[data-tour="project-header"]',
+    title: "Project header",
+    body: "Click the project name to jump to its home page. The gear icon next to it opens project settings, where you can change things like the workspace path or description.",
+  },
+  {
+    id: "new-task-button",
+    phase: "project",
+    target: '[data-tour="new-task-button"]',
+    title: "Start a new task",
+    body: "Click New Task any time to come back to this screen and start something new for this project.",
+  },
+  {
+    id: "project-main-content",
+    phase: "project",
+    target: '[data-tour="main-content"]',
+    title: "The task screen",
+    body: "This is where you start new tasks, watch them build, and talk to the agents working on them.",
   },
   {
     id: "refresh-context",
@@ -131,26 +214,79 @@ export const ONBOARDING_STEPS: OnboardingStep[] = [
     body: "Refresh this project's context so Masterminds and Assistants have an up-to-date picture of the codebase.",
   },
   {
-    id: "orchestrator-vs-single-repo",
-    phase: "concepts",
-    target: null,
-    title: "Two kinds of projects",
-    body: "A single-repo project points straight at one codebase. An orchestrator project points at a folder containing several independently-versioned repos -- Eniac detects this automatically and lets you scope tasks to one repo or run them across all of them.",
-    images: [
-      { src: "images/01-workspace-home.jpg", caption: "Single-repo" },
-      // TODO: no real orchestrator-project screenshot exists yet in docs/images/ --
-      // everything captured so far is single-repo. Needs a fresh screenshot of an
-      // orchestrator project's home-screen RepoGraph before this caption has a real
-      // image instead of reusing the single-repo one as a placeholder.
-      { src: "images/01-workspace-home.jpg", caption: "Orchestrator" },
-    ],
+    id: "prompt-input",
+    phase: "project",
+    target: '[data-tour="prompt-input"]',
+    title: "Describe what you want",
+    body: "Write a task in plain language -- this is the one thing you write from scratch; everything after is agent-authored and yours to review.",
+  },
+  {
+    id: "attach-button",
+    phase: "project",
+    target: '[data-tour="attach-button"]',
+    title: "Attach images",
+    body: "Attach a screenshot or mockup for the agent to reference -- useful for UI work, bug reports, or anything easier to show than describe.",
+  },
+  {
+    id: "mode-select",
+    phase: "project",
+    target: '[data-tour="mode-select"]',
+    title: "Ship, Patch, or Discuss",
+    body: "Pick a mode depending on how big the task is. Once a task starts, its mode is locked in and can't be changed.",
+    allowInteraction: true,
+    advanceWhenSelectorPresent: '[data-tour="mode-select-menu"]',
+  },
+  {
+    id: "mode-select-menu",
+    phase: "project",
+    target: '[data-tour="mode-select-menu"]',
+    title: "Three modes",
+    body: "Here are your options.",
+  },
+  {
+    id: "mode-discuss",
+    phase: "project",
+    target: '[data-tour="mode-option-discuss"]',
+    avoid: '[data-tour="mode-select-menu"]',
+    title: "Discuss",
+    body: "Talk it through with the agent -- no files are touched. Good for exploring an idea before committing to it.",
+  },
+  {
+    id: "mode-patch",
+    phase: "project",
+    target: '[data-tour="mode-option-patch"]',
+    avoid: '[data-tour="mode-select-menu"]',
+    title: "Patch",
+    body: "Find it, fix it, test it -- for small bugfixes or feature patches. Faster than a full Ship run.",
+  },
+  {
+    id: "mode-ship",
+    phase: "project",
+    target: '[data-tour="mode-option-ship"]',
+    avoid: '[data-tour="mode-select-menu"]',
+    title: "Ship",
+    body: "The full pipeline -- investigate, plan, build, and review. Use this for real features.",
+  },
+  {
+    id: "agent-select",
+    phase: "project",
+    target: '[data-tour="agent-select"]',
+    title: "Choose your agent",
+    body: "Pick which CLI runs this task -- Claude or Codex, whichever you've got authenticated. For now, that's the choice.",
+  },
+  {
+    id: "files-toggle",
+    phase: "project",
+    target: '[data-tour="files-toggle"]',
+    title: "Project files",
+    body: "Opens the files panel -- your project's context files and this task's memory files live here. Click any file to open it.",
   },
   {
     id: "done",
-    phase: "concepts",
+    phase: "project",
     target: null,
     title: "You're all set",
-    body: "Reopen this tour anytime from the Help icon.",
+    body: "That's the tour. For more detail any time, reopen the getting-started guide from the Help icon.",
   },
 ];
 

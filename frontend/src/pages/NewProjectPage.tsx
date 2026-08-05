@@ -84,10 +84,10 @@ export function NewProjectPage() {
         onBack={() => navigate("/")}
       />
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 20, maxWidth: 480 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 20, maxWidth: 480 }} data-tour="new-project-form">
         <FormField
           label="Project Name"
-          data-tour="new-project-fields"
+          data-tour="project-name-field"
           helperText={
             name.length > 0 && !nameValid ? (
               <span style={{ color: "var(--error)" }}>
@@ -101,7 +101,11 @@ export function NewProjectPage() {
           <TextInput placeholder="payments-gateway" value={name} onChange={(e) => setName(e.target.value)} />
         </FormField>
 
-        <FormField label="Description" helperText="Optional — a short note on what this project is.">
+        <FormField
+          label="Description"
+          data-tour="project-description-field"
+          helperText="Optional — a short note on what this project is."
+        >
           <Textarea
             rows={2}
             placeholder="What is this project for?"
@@ -112,6 +116,7 @@ export function NewProjectPage() {
 
         <FormField
           label="Workspace Path"
+          data-tour="workspace-path-field"
           helperText="The folder where your project's code lives. Eniac will operate on files here — but never outside this path."
         >
           <TextInput
@@ -141,6 +146,7 @@ export function NewProjectPage() {
 
         <Checkbox
           id="greenfield"
+          data-tour="greenfield-checkbox"
           checked={greenfield}
           onChange={(e) => setGreenfield(e.target.checked)}
           label="I'll add this later — this is a greenfield project."
@@ -152,12 +158,7 @@ export function NewProjectPage() {
         ) : null}
 
         <div style={{ display: "flex", gap: 12 }}>
-          <Button
-            variant="primary"
-            onClick={handleSubmit}
-            disabled={!canSubmit}
-            data-tour="new-project-create"
-          >
+          <Button variant="primary" onClick={handleSubmit} disabled={!canSubmit}>
             {submitting ? "Creating…" : "Create Project"}
           </Button>
           <Button variant="secondary" onClick={() => navigate("/")}>

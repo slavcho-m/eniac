@@ -18,6 +18,11 @@ interface ModeOption {
 // ModeSelect.tsx so that file only exports the component (react-refresh/only-export-components).
 export const TASK_MODES: Record<TaskMode, ModeOption> = {
   discuss: { value: "discuss", label: "Discuss", description: "Talk it through — no files touched.", icon: MessagesSquare },
-  patch: { value: "patch", label: "Patch", description: "Find it, fix it, test it — for small bugfixes.", icon: Wrench },
+  patch: {
+    value: "patch",
+    label: "Patch",
+    description: "Find it, fix it, test it — for small bugfixes or feature patches.",
+    icon: Wrench,
+  },
   ship: { value: "ship", label: "Ship", description: "Full pipeline — investigate, plan, build, review.", icon: Rocket },
 };

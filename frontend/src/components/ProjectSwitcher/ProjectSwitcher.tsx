@@ -21,7 +21,7 @@ export function ProjectSwitcher({ name, onClick, onSettingsClick }: ProjectSwitc
   );
 
   return (
-    <div className={styles.switcher}>
+    <div className={styles.switcher} data-tour="project-header">
       {onClick ? (
         <button type="button" className={styles.main} onClick={onClick}>
           {main}

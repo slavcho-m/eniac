@@ -92,6 +92,7 @@ export function PromptInput({
             disabled={disabled}
             aria-label="Attach image"
             title="Attach image"
+            data-tour="attach-button"
           >
             <Paperclip size={13} strokeWidth={1.75} />
           </button>
